@@ -30,8 +30,8 @@ services:
       db:
         condition: service_healthy
     volumes:
-      - static_volume:/app/staticfiles
-      - media_volume:/app/media
+      - static_volume:/app/src/staticfiles
+      - media_volume:/app/src/media
 
 volumes:
   postgres_data:
