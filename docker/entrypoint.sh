@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+export DJANGO_SETTINGS_MODULE=mes_report3.settings.prod
+
 echo "Running database migrations..."
 uv run python src/manage.py migrate --noinput
 
