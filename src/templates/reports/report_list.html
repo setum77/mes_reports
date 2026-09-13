@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block title %}Отчеты{% endblock %}
+
+{% block content %}
+<h1 class="h3 mb-4">Отчеты по производству</h1>
+
+<div class="stats-grid">
+    <a href="{% url 'reports:report1' %}" class="text-decoration-none">
+        <div class="stats-card">
+            <h5>1. Сводный отчет (заказы)</h5>
+            <p class="text-muted small mb-0">Лоты, план/факт, ссылки на брак</p>
+        </div>
+    </a>
+    <a href="{% url 'reports:report2' %}" class="text-decoration-none">
+        <div class="stats-card">
+            <h5>2. Производительность линии</h5>
+            <p class="text-muted small mb-0">FOL/BOL по дням с графиками</p>
+        </div>
+    </a>
+    <a href="{% url 'reports:report3' %}" class="text-decoration-none">
+        <div class="stats-card">
+            <h5>3. Сводный по месяцам</h5>
+            <p class="text-muted small mb-0">Месячная производительность</p>
+        </div>
+    </a>
+    <a href="{% url 'reports:report4' %}" class="text-decoration-none">
+        <div class="stats-card">
+            <h5>4. Отчет по браку</h5>
+            <p class="text-muted small mb-0">Незавершенные и ручные браки</p>
+        </div>
+    </a>
+    <a href="{% url 'reports:report5' %}" class="text-decoration-none">
+        <div class="stats-card">
+            <h5>5. Повторные проходы</h5>
+            <p class="text-muted small mb-0">БУ с повторными проходами станций</p>
+        </div>
+    </a>
+</div>
+{% endblock %}

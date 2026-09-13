@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% load report_tags %}
+
+{% block title %}Отчет 3: Сводный по месяцам{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="h3 mb-0">Сводный отчет по месяцам</h1>
+    <a href="{% url 'reports:report3_export' %}?{{ request.GET.urlencode }}" class="btn btn-outline-success">Экспорт в Excel</a>
+</div>
+
+<div class="card p-3 mb-4">
+    <form method="get" class="row g-3 align-items-end">
+        <div class="col-auto">
+            <label class="form-label">Год</label>
+            <select name="year" class="form-select form-select-sm" onchange="this.form.submit()">
+                {% for y in years %}
+                <option value="{{ y }}" {% if y == year %}selected{% endif %}>{{ y }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-auto">
+            <button type="submit" class="btn btn-primary btn-sm">Обновить</button>
+        </div>
+    </form>
+</div>
+
+<div class="stats-grid mb-4">
+    <div class="stats-card text-center">
+        <h5>FOL</h5>
+        <div class="text-muted small">Время работы (ч)</div>
+        <div class="h5">{{ data|sum:"fol_hours" }}</div>
+        <div class="text-muted small">Производство: {{ data|sum:"fol_production" }}</div>
+        <div class="text-muted small">Скорость: {{ data|avg:"fol_speed" }}</div>
+    </div>
+    <div class="stats-card text-center">
+        <h5>BOL</h5>
+        <div class="text-muted small">Время работы (ч)</div>
+        <div class="h5">{{ data|sum:"bol_hours" }}</div>
+        <div class="text-muted small">Производство: {{ data|sum:"bol_production" }}</div>
+        <div class="text-muted small">Скорость: {{ data|avg:"bol_speed" }}</div>
+    </div>
+    <div class="stats-card text-center">
+        <h5>Месяцев</h5>
+        <div class="h5">{{ data|length }}</div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-lg-8">
+        <canvas id="chartHours" height="100"></canvas>
+    </div>
+    <div class="col-lg-4">
+        <canvas id="chartSpeed" height="200"></canvas>
+    </div>
+</div>
+
+<div class="table-responsive mt-4">
+    <table class="table table-sm table-hover align-middle">
+        <thead class="table-light">
+            <tr>
+                <th>{% sort_link "report_month" "Месяц" %}</th>
+                <th>{% sort_link "fol_hours" "FOL hours" %}</th>
+                <th>{% sort_link "fol_production" "FOL production" %}</th>
+                <th>{% sort_link "fol_speed" "FOL speed" %}</th>
+                <th>{% sort_link "bol_hours" "BOL hours" %}</th>
+                <th>{% sort_link "bol_production" "BOL production" %}</th>
+                <th>{% sort_link "bol_speed" "BOL speed" %}</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in data %}
+            <tr>
+                <td class="small text-nowrap">{{ row.report_month|date:"Y-m" }}</td>
+                <td>{{ row.fol_hours }}</td>
+                <td>{{ row.fol_production }}</td>
+                <td>{{ row.fol_speed }}</td>
+                <td>{{ row.bol_hours }}</td>
+                <td>{{ row.bol_production }}</td>
+                <td>{{ row.bol_speed }}</td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="7" class="text-center text-muted py-4">Нет данных</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% endblock %}
+{% block extra_js %}
+<script>
+const ctx = document.getElementById('chartHours').getContext('2d');
+const ctx2 = document.getElementById('chartSpeed').getContext('2d');
+const months = [{% for row in data %}"{{ row.report_month|date:'Y-m' }}",{% endfor %}];
+const folHours = [{% for row in data %}{{ row.fol_hours }},{% endfor %}];
+const bolHours = [{% for row in data %}{{ row.bol_hours }},{% endfor %}];
+const folSpeed = [{% for row in data %}{{ row.fol_speed }},{% endfor %}];
+const bolSpeed = [{% for row in data %}{{ row.bol_speed }},{% endfor %}];
+
+new Chart(ctx, {
+    type: 'line',
+    data: {
+        labels: months,
+        datasets: [
+            {label: 'FOL hours', borderColor: '#4361ee', tension: 0.2, fill: false},
+            {label: 'BOL hours', borderColor: '#ef4444', tension: 0.2, fill: false}
+        ]
+    },
+    options: {responsive: true, plugins: {title: {display: true, text: 'Время работы линий по месяцам'}}}
+});
+
+new Chart(ctx2, {
+    type: 'bar',
+    data: {
+        labels: months,
+        datasets: [
+            {label: 'FOL speed', backgroundColor: '#4361ee'},
+            {label: 'BOL speed', backgroundColor: '#ef4444'}
+        ]
+    },
+    options: {responsive: true, plugins: {title: {display: true, text: 'Скорость выпуска по месяцам'}}, scales: {y: {beginAtZero: true}}}
+});
+</script>
+{% endblock %}

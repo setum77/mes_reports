@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}MES Reports{% endblock %}
+
+{% block content %}
+<div class="text-center py-5">
+    <h1 class="h2 mb-3">MES Production Reports</h1>
+    <p class="text-muted mb-4">Система отчетов по производству блоков управления двигателем</p>
+
+    <div class="stats-grid">
+        <a href="{% url 'reports:report1' %}" class="text-decoration-none">
+            <div class="stats-card">
+                <h5>Сводный отчет (заказы)</h5>
+                <p class="text-muted small mb-0">Лоты, план/факт, ссылки на брак</p>
+            </div>
+        </a>
+        <a href="{% url 'reports:report2' %}" class="text-decoration-none">
+            <div class="stats-card">
+                <h5>Производительность линии</h5>
+                <p class="text-muted small mb-0">FOL/BOL по дням с графиками</p>
+            </div>
+        </a>
+        <a href="{% url 'reports:report3' %}" class="text-decoration-none">
+            <div class="stats-card">
+                <h5>Сводный по месяцам</h5>
+                <p class="text-muted small mb-0">Месячная производительность</p>
+            </div>
+        </a>
+        <a href="{% url 'reports:report4' %}" class="text-decoration-none">
+            <div class="stats-card">
+                <h5>Отчет по браку</h5>
+                <p class="text-muted small mb-0">Незавершенные и ручные браки</p>
+            </div>
+        </a>
+        <a href="{% url 'reports:report5' %}" class="text-decoration-none">
+            <div class="stats-card">
+                <h5>Повторные проходы</h5>
+                <p class="text-muted small mb-0">БУ с повторными проходами станций</p>
+            </div>
+        </a>
+    </div>
+
+    {% if user.is_staff %}
+    <div class="mt-4">
+        <a href="{% url 'uploads:upload_home' %}" class="btn btn-primary">Загрузить Excel</a>
+    </div>
+    {% else %}
+    <div class="mt-4">
+        <p class="text-muted">Для загрузки данных <a href="{% url 'accounts:login' %}">войдите</a> как администратор.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

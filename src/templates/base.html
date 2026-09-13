@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}MES Reports{% endblock %}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        :root {
+            --primary: #4361ee;
+            --primary-dark: #3a56d4;
+            --secondary: #10b981;
+            --danger: #ef4444;
+            --light-bg: #f8f9fa;
+            --border-color: #e5e7eb;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--light-bg);
+            margin: 0;
+        }
+        .navbar { box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .container-fluid { max-width: 1400px; }
+        .content { padding: 24px; }
+        .card { border: 1px solid var(--border-color); border-radius: 8px; }
+        .btn-primary { background: var(--primary); border-color: var(--primary); }
+        .btn-primary:hover { background: var(--primary-dark); }
+        .table th { background: #f1f5f9; border-bottom-width: 2px; }
+        .table td { vertical-align: middle; }
+        .stats-card { background: #fff; padding: 16px 20px; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 16px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+        a.text-primary { color: var(--primary); }
+        .sort-link:hover { text-decoration: underline; }
+        .sort-link.sorted { color: var(--primary); font-weight: 600; }
+    </style>
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+<nav class="navbar navbar-expand-lg navbar-dark bg-white">
+    <div class="container-fluid">
+        <a class="navbar-brand text-primary" href="{% url 'home' %}">MES Reports</a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarsExample">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarsExample">
+            <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+                <li class="nav-item"><a class="nav-link" href="{% url 'reports:report1' %}">Сводный отчет (заказы)</a></li>
+                <li class="nav-item"><a class="nav-link" href="{% url 'reports:report2' %}">Производительность линии</a></li>
+                <li class="nav-item"><a class="nav-link" href="{% url 'reports:report3' %}">Сводный по месяцам</a></li>
+                <li class="nav-item"><a class="nav-link" href="{% url 'reports:report4' %}">Отчет по браку</a></li>
+                <li class="nav-item"><a class="nav-link" href="{% url 'reports:report5' %}">Повторные проходы</a></li>
+                {% if user.is_staff %}
+                <li class="nav-item"><a class="nav-link" href="{% url 'uploads:upload_home' %}">Загрузка Excel</a></li>
+                {% endif %}
+            </ul>
+            <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
+                {% if user.is_authenticated %}
+                <li class="nav-item"><a class="nav-link" href="{% url 'accounts:logout' %}">Выйти ({{ user.username }})</a></li>
+                {% else %}
+                <li class="nav-item"><a class="nav-link" href="{% url 'accounts:login' %}">Вход</a></li>
+                {% endif %}
+            </ul>
+        </div>
+    </div>
+</nav>
+<div class="container-fluid">
+    <div class="content">
+        {% block content %}{% endblock %}
+    </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+{% block extra_js %}{% endblock %}
+</body>
+</html>

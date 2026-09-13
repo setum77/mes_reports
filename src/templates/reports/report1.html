@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% load report_tags %}
+
+{% block title %}Отчет 1: Сводный{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="h3 mb-0">Сводный отчет (заказы)</h1>
+    <div>
+        <a href="{% url 'reports:report1_export' %}?{{ request.GET.urlencode }}" class="btn btn-outline-success">Экспорт в Excel</a>
+    </div>
+</div>
+
+<div class="card p-3 mb-4">
+    <form method="get" class="row g-3 align-items-end">
+        <div class="col-auto">
+            <label class="form-label">Фильтр по дате</label>
+            <select name="filter" class="form-select form-select-sm" onchange="togglePeriod(this.value)">
+                <option value="30d" {% if filter_type == '30d' %}selected{% endif %}>Последние 30 дней</option>
+                <option value="month" {% if filter_type == 'month' %}selected{% endif %}>Текущий месяц</option>
+                <option value="90d" {% if filter_type == '90d' %}selected{% endif %}>Последние 90 дней</option>
+                <option value="180d" {% if filter_type == '180d' %}selected{% endif %}>Последние 180 дней</option>
+                <option value="period" {% if filter_type == 'period' %}selected{% endif %}>Выбрать период</option>
+            </select>
+        </div>
+        <div class="col-auto" id="period-fields" style="display:none;">
+            <label class="form-label">Дата с</label>
+            <input type="date" name="start" class="form-control form-control-sm" {% if start_date %}value="{{ start_date|date:'Y-m-d' }}"{% endif %}>
+        </div>
+        <div class="col-auto" id="period-fields2" style="display:none;">
+            <label class="form-label">Дата по</label>
+            <input type="date" name="end" class="form-control form-control-sm" {% if end_date %}value="{{ end_date|date:'Y-m-d' }}"{% endif %}>
+        </div>
+        <div class="col-auto">
+            <button type="submit" class="btn btn-primary btn-sm">Обновить</button>
+        </div>
+    </form>
+</div>
+
+<div class="table-responsive">
+    <table class="table table-sm table-hover align-middle">
+        <thead class="table-light">
+            <tr>
+                <th>N</th>
+                <th>{% sort_link "LOT" "LOT" %}</th>
+                <th>{% sort_link "production_spec" "Production spec." %}</th>
+                <th>{% sort_link "Total" "Total" %}</th>
+                <th>{% sort_link "Production" "Production" %}</th>
+                <th>{% sort_link "Ok" "Ok" %}</th>
+                <th>{% sort_link "Diff" "Diff" %}</th>
+                <th>{% sort_link "Defect" "Defect" %}</th>
+                <th>{% sort_link "start" "start" %}</th>
+                <th>{% sort_link "finish" "finish" %}</th>
+                <th>{% sort_link "comment" "comment" %}</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in data %}
+            <tr>
+                <td>{{ row.N }}</td>
+                <td><a href="{% url 'reports:lot_edit' row.LOT %}" class="text-decoration-none" title="Редактировать лот">{{ row.LOT }}</a></td>
+                <td>{{ row.production_spec }}</td>
+                <td>
+                    {% if user.is_staff %}
+                    <a href="{% url 'reports:lot_edit' row.LOT %}" class="text-decoration-none" title="Редактировать">{{ row.Total|default:'' }}</a>
+                    {% else %}
+                    {{ row.Total|default:'' }}
+                    {% endif %}
+                </td>
+                <td>{{ row.Production }}</td>
+                <td>{{ row.Ok }}</td>
+                <td class="{% if row.Diff > 0 %}text-danger fw-bold{% endif %}">{{ row.Diff }}</td>
+                <td>
+                    {% if row.Defect %}
+                        {% if user.is_staff and row.defect_sns %}
+                            {% for sn in row.defect_sns %}
+                                <a href="{% url 'reports:report4' %}?filter=30d&lot={{ row.LOT }}" class="d-block text-decoration-none small">{{ sn }}</a>
+                            {% endfor %}
+                        {% else %}
+                            <span class="small">{{ row.Defect }}</span>
+                        {% endif %}
+                    {% endif %}
+                </td>
+                <td class="small text-nowrap">{% if row.start %}{{ row.start|date:"Y-m-d H:i" }}{% endif %}</td>
+                <td class="small text-nowrap">{% if row.finish %}{{ row.finish|date:"Y-m-d H:i" }}{% endif %}</td>
+                <td class="small">
+                    {% if user.is_staff %}
+                    <a href="{% url 'reports:lot_edit' row.LOT %}" class="text-decoration-none" title="Редактировать">{{ row.comment|truncatechars:30 }}</a>
+                    {% else %}
+                    {{ row.comment|truncatechars:30 }}
+                    {% endif %}
+                </td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="11" class="text-center text-muted py-4">Нет данных</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="card p-3 mt-3">
+    <h6>Сводка</h6>
+    <div class="row g-3">
+        <div class="col-auto"><span class="badge bg-secondary">Всего лотов: {{ data|length }}</span></div>
+        <div class="col-auto"><span class="badge bg-success">Всего Production: {{ data|sum:"Production" }}</span></div>
+        <div class="col-auto"><span class="badge bg-primary">Всего Ok: {{ data|sum:"Ok" }}</span></div>
+        <div class="col-auto"><span class="badge bg-danger">Всего Diff: {{ data|sum:"Diff" }}</span></div>
+    </div>
+ </div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function togglePeriod(val) {
+    const fields = document.getElementById('period-fields');
+    const fields2 = document.getElementById('period-fields2');
+    if (val === 'period') { fields.style.display='block'; fields2.style.display='block'; }
+    else { fields.style.display='none'; fields2.style.display='none'; }
+}
+{% if filter_type == 'period' %}
+document.addEventListener('DOMContentLoaded', function() {
+    togglePeriod('period');
+});
+{% endif %}
+</script>
+{% endblock %}
+

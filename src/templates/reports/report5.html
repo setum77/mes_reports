@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% load report_tags %}
+
+{% block title %}Отчет 5: Повторные проходы{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="h3 mb-0">Повторные проходы станций</h1>
+    <div>
+        {% if user.is_staff %}
+        <a href="{% url 'reports:report5_comment' %}" class="btn btn-outline-warning">Добавить комментарий</a>
+        {% endif %}
+        <a href="{% url 'reports:report5_export' %}?{{ request.GET.urlencode }}" class="btn btn-outline-success">Экспорт в Excel</a>
+    </div>
+</div>
+
+<div class="card p-3 mb-4">
+    <form method="get" class="row g-3 align-items-end">
+        <div class="col-auto">
+            <label class="form-label">Фильтр</label>
+            <select name="filter" class="form-select form-select-sm" onchange="toggleExtra(this.value)">
+                <option value="30d" {% if filter_type == '30d' %}selected{% endif %}>Последние 50 записей</option>
+                <option value="month" {% if filter_type == 'month' %}selected{% endif %}>Текущий месяц</option>
+                <option value="period" {% if filter_type == 'period' %}selected{% endif %}>Выбрать период</option>
+                <option value="lot" {% if filter_type == 'lot' %}selected{% endif %}>По лоту</option>
+            </select>
+        </div>
+        <div class="col-auto" id="lot-field" style="display:none;">
+            <label class="form-label">Номер лота</label>
+            <input type="text" name="lot" class="form-control form-control-sm" placeholder="MO608131-001" value="{{ lot_filter }}">
+        </div>
+        <div class="col-auto" id="period-start" style="display:none;">
+            <input type="date" name="start" class="form-control form-control-sm" {% if start_date %}value="{{ start_date|date:'Y-m-d' }}"{% endif %}>
+        </div>
+        <div class="col-auto" id="period-end" style="display:none;">
+            <input type="date" name="end" class="form-control form-control-sm" {% if end_date %}value="{{ end_date|date:'Y-m-d' }}"{% endif %}>
+        </div>
+        <div class="col-auto">
+            <button type="submit" class="btn btn-primary btn-sm">Обновить</button>
+        </div>
+    </form>
+</div>
+
+<div class="table-responsive">
+    <table class="table table-sm table-hover align-middle">
+        <thead class="table-light">
+            <tr>
+                <th>№</th>
+                <th>{% sort_link "pcs_no" "Серийный номер" %}</th>
+                <th>{% sort_link "production_spec" "Production spec." %}</th>
+                <th>{% sort_link "lot_number" "Лот" %}</th>
+                <th>{% sort_link "station" "Станция" %}</th>
+                <th>{% sort_link "dates" "Дата время" %}</th>
+                <th>{% sort_link "comment" "Комментарий" %}</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in data %}
+            <tr>
+                <td>{{ forloop.counter }}</td>
+                <td class="font-monospace">{{ row.pcs_no }}</td>
+                <td>{{ row.production_spec }}</td>
+                <td>{{ row.lot_number|default:'' }}</td>
+                <td>{{ row.station }}</td>
+                <td class="small">{{ row.dates }}</td>
+                <td class="small">{{ row.comment|default:'' }}</td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="7" class="text-center text-muted py-4">Нет данных</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="card p-3 mt-3">
+    <h6>Сводка</h6>
+    <span class="badge bg-secondary">Всего записей: {{ data|length }}</span>
+    <span class="badge bg-info">Уникальных БУ: {{ data|unique_pcs }}</span>
+</div>
+
+{% endblock %}
+{% block extra_js %}
+<script>
+function toggleExtra(val) {
+    document.getElementById('lot-field').style.display = val === 'lot' ? 'block' : 'none';
+    document.getElementById('period-start').style.display = val === 'period' ? 'block' : 'none';
+    document.getElementById('period-end').style.display = val === 'period' ? 'block' : 'none';
+}
+document.addEventListener('DOMContentLoaded', function() {
+    toggleExtra("{{ filter_type }}");
+});
+</script>
+{% endblock %}

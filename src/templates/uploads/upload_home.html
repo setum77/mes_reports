@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% load widget_tweaks %}
+
+{% block title %}Загрузка Excel{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="h3 mb-0">Загрузка Excel выгрузки</h1>
+</div>
+
+    <div class="card p-4">
+        <p class="text-muted">
+            Поддерживаемые форматы: <strong>.xls</strong>, <strong>.xlsx</strong>
+        </p>
+        <form method="post" enctype="multipart/form-data" id="upload-form" action="{% url 'uploads:upload_file' %}">
+            {% csrf_token %}
+            <div class="mb-3">
+                {{ form.file }}
+                {% if form.file.errors %}
+                    <div class="text-danger small">{{ form.file.errors }}</div>
+                {% endif %}
+            </div>
+            <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-primary" id="submit-btn">Загрузить и обработать</button>
+                <a href="{% url 'home' %}" class="btn btn-outline-secondary">Назад</a>
+            </div>
+        </form>
+    </div>
+
+    <div id="loading-overlay" class="d-none" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999;">
+        <div class="d-flex flex-column align-items-center justify-content-center h-100">
+            <div class="spinner-border text-light" role="status" style="width: 3rem; height: 3rem;">
+                <span class="visually-hidden">Обрабатываем...</span>
+            </div>
+            <span class="text-light mt-2">Обрабатываем файл, подождите...</span>
+        </div>
+    </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.getElementById('upload-form').addEventListener('submit', function() {
+    var overlay = document.getElementById('loading-overlay');
+    var btn = document.getElementById('submit-btn');
+    overlay.classList.remove('d-none');
+    btn.disabled = true;
+    btn.innerHTML = 'Обрабатываем...';
+});
+</script>
+{% endblock %}

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block title %}Загрузка завершена{% endblock %}
+
+{% block content %}
+<div class="text-center py-5">
+    <div class="alert alert-success">
+        <h4 class="alert-heading">Файл успешно обработан!</h4>
+        <p class="mb-0">Всего записей в файле: <strong>{{ total }}</strong></p>
+        <p class="mb-0">Новых записей загружено: <strong class="text-success">{{ inserted }}</strong></p>
+        <p class="mb-0">Дубликаты пропущены: <strong class="text-info">{{ duplicates }}</strong></p>
+    </div>
+    <a href="{% url 'uploads:upload_home' %}" class="btn btn-outline-primary">Загрузить еще файл</a>
+    <a href="{% url 'home' %}" class="btn btn-secondary">На главную</a>
+</div>
+{% endblock %}
