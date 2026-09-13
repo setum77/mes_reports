@@ -10,4 +10,4 @@ echo "Collecting static files..."
 uv run python src/manage.py collectstatic --noinput
 
 echo "Starting server..."
-exec uv run gunicorn mes_report3.wsgi:application --bind 0.0.0.0:8000
+exec uv run gunicorn mes_report3.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 120 --max-requests 1000 --max-requests-jitter 50 --preload
