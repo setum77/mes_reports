@@ -15,7 +15,6 @@ COPY pyproject.toml uv.lock* ./
 RUN pip install uv && uv sync --frozen
 
 COPY src/ /app/src/
-COPY temp/ /app/temp/
 COPY docker/entrypoint.sh /app/entrypoint.sh
 
 RUN uv run python src/manage.py collectstatic --noinput

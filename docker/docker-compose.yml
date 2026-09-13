@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   db:
     image: postgres:17-alpine
@@ -22,7 +20,7 @@ services:
       dockerfile: docker/Dockerfile
     restart: unless-stopped
     env_file:
-      - ../.env
+      - .env
     environment:
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
