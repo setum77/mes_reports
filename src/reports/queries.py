@@ -10,6 +10,41 @@ STATION_FOL_END = 50
 STATION_BOL_START = 60
 STATION_BOL_END = 130
 
+STATION_NAME_TRANSLATIONS = {
+    "PCB投料": "PCB Loading",
+    "等离子清洁": "Plasma Cleaning",
+    "壳体组装": "Assembly",
+    "静置": "Standing",
+    "高温老化": "Oven (High-Temperature Aging / Furnace)",
+    "标定刷写": "Firmware Flashing (Programming)",
+    "标定检测": "Firmware Verification",
+    "气密测试": "Seal Test",
+    "PIN测试": "PIN Test",
+    "贴标": "Labeling",
+}
+
+STATION_POSITION_TRANSLATIONS = {
+    "10": "PCB Loading",
+    "20": "FCT1",
+    "30": "Plasma Cleaning",
+    "50": "Assembly",
+    "60": "Standing",
+    "70": "Oven (High-Temperature Aging / Furnace)",
+    "80": "FCT2",
+    "90": "Firmware Flashing (Programming)",
+    "A100": "Firmware Verification",
+    "A110": "Seal Test",
+    "A120": "PIN Test",
+    "A130": "Labeling",
+}
+
+
+def translate_workstation_name(position_no, workstation_name):
+    name = (workstation_name or "").strip()
+    if name in STATION_NAME_TRANSLATIONS:
+        return STATION_NAME_TRANSLATIONS[name]
+    return STATION_POSITION_TRANSLATIONS.get(str(position_no or "").strip(), name)
+
 
 def dictfetchall(cursor):
     """Возвращает строки курсора как список dict."""
@@ -474,3 +509,27 @@ def report5_repeated_passes(start_date=None, end_date=None, limit=50):
         row["comment"] = comments_map.get((row["pcs_no"], row["station"]), "")
 
     return rows
+
+
+def report6_serial_number(pcs_no):
+    if not pcs_no:
+        return []
+
+    from production.models import ProductionRecord
+
+    records = ProductionRecord.objects.filter(pcs_no=pcs_no).order_by("created_date", "id")
+    return [
+        {
+            "pcs_no": record.pcs_no,
+            "lot_number": record.lot_number,
+            "production_spec": record.production_spec or "",
+            "subop_no": record.subop_no,
+            "workstation_name": translate_workstation_name(
+                record.position_no, record.workstation_name
+            ),
+            "created_date": record.created_date,
+            "result": record.result or "",
+            "test_data": record.test_data or "",
+        }
+        for record in records
+    ]

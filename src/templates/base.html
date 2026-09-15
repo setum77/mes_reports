@@ -68,6 +68,10 @@
                     <a class="btn btn-sm navbar-btn text-decoration-none {% if current == 'report5' %}btn-primary active{% else %}btn-outline-primary{% endif %}"
                        href="{% url 'reports:report5' %}">Проходы</a>
                 </li>
+                <li class="nav-item mb-2 mb-lg-0 me-2">
+                    <a class="btn btn-sm navbar-btn text-decoration-none {% if current == 'report6' %}btn-primary active{% else %}btn-outline-primary{% endif %}"
+                       href="{% url 'reports:report6' %}">SN</a>
+                </li>
                 {% endwith %}
             </ul>
             {% endif %}

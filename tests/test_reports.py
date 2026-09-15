@@ -14,7 +14,13 @@ from datetime import datetime
 from django.utils import timezone
 
 from production.models import ProductionRecord
-from reports.queries import report1_orders, report2_line_productivity, report5_repeated_passes
+from reports.queries import (
+    report1_orders,
+    report2_line_productivity,
+    report5_repeated_passes,
+    report6_serial_number,
+    translate_workstation_name,
+)
 from reports.views import apply_sort, get_sort_params, SORTABLE_FIELDS
 
 
@@ -224,6 +230,7 @@ def test_sortable_fields_defined():
     assert "report3" in SORTABLE_FIELDS
     assert "report4" in SORTABLE_FIELDS
     assert "report5" in SORTABLE_FIELDS
+    assert "report6" in SORTABLE_FIELDS
     assert "LOT" in SORTABLE_FIELDS["report1"]
     assert "report_date" in SORTABLE_FIELDS["report2"]
     assert "report_month" in SORTABLE_FIELDS["report3"]
@@ -271,3 +278,38 @@ def test_report1_sort_by_production():
         row["N"] = i
     assert sorted_data[0]["N"] == 1
     assert sorted_data[1]["N"] == 2
+
+
+@pytest.mark.django_db
+def test_report6_serial_number():
+    first = timezone.make_aware(datetime(2026, 9, 15, 10, 0, 0))
+    second = timezone.make_aware(datetime(2026, 9, 15, 11, 0, 0))
+
+    ProductionRecord.objects.create(
+        lot_number="LOT-001", production_spec="SPEC-001", subop_no=50,
+        position_no="50", workstation_name="壳体组装", pcs_no="SN-001",
+        created_date=second, result="OK", test_data='{"value": 2}',
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT-001", production_spec="SPEC-001", subop_no=10,
+        position_no="10", workstation_name="PCB投料", pcs_no="SN-001",
+        created_date=first, result="OK", test_data='{"value": 1}',
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT-002", production_spec="SPEC-002", subop_no=10,
+        position_no="10", workstation_name="PCB投料", pcs_no="SN-002",
+        created_date=first, result="OK", test_data="",
+    )
+
+    data = report6_serial_number("SN-001")
+
+    assert [row["created_date"] for row in data] == [first, second]
+    assert [row["workstation_name"] for row in data] == ["PCB Loading", "Assembly"]
+    assert data[0]["test_data"] == '{"value": 1}'
+    assert report6_serial_number("MISSING") == []
+
+
+def test_translate_workstation_name_by_position():
+    assert translate_workstation_name("A110", "气密测试") == "Seal Test"
+    assert translate_workstation_name("20", "FCT1") == "FCT1"
+    assert translate_workstation_name("unknown", "Unknown") == "Unknown"

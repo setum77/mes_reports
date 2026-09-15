@@ -15,7 +15,7 @@ from django.views import View
 from django.views.generic import TemplateView, CreateView, UpdateView
 
 from accounts.views import admin_required
-from production.models import LotInfo, ManualDefect, Report5Comment
+from production.models import LotInfo, ManualDefect, ProductionRecord, Report5Comment
 from reports.queries import (
     get_date_range,
     report1_orders,
@@ -23,6 +23,7 @@ from reports.queries import (
     report3_monthly_productivity,
     report4_defects,
     report5_repeated_passes,
+    report6_serial_number,
 )
 
 
@@ -39,6 +40,8 @@ SORTABLE_FIELDS = {
                  "bol_hours", "bol_production", "bol_speed"],
     "report4": ["pcs_no", "production_spec", "lot_number", "entry_date", "comment"],
     "report5": ["pcs_no", "production_spec", "lot_number", "station", "dates", "comment"],
+    "report6": ["pcs_no", "lot_number", "production_spec", "subop_no", "workstation_name",
+                "created_date", "result", "test_data"],
 }
 
 
@@ -301,6 +304,31 @@ class Report5CommentFormView(View):
 
 
 # ========================
+# Отчет 6: Серийный номер
+# ========================
+
+class Report6View(TemplateView):
+    template_name = "reports/report6.html"
+
+    def get(self, request, *args, **kwargs):
+        pcs_no = request.GET.get("pcs_no", "").strip()
+        data = report6_serial_number(pcs_no) if pcs_no else []
+        exists = ProductionRecord.objects.filter(pcs_no=pcs_no).exists() if pcs_no else None
+
+        if pcs_no and not exists:
+            messages.error(request, f'Серийный номер "{pcs_no}" не найден в базе.')
+
+        sort_field, sort_dir = get_sort_params(request, "report6")
+        if sort_field:
+            data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report6"])
+
+        return self.render_to_response(self.get_context_data(
+            data=data, pcs_no=pcs_no, exists=exists,
+            sort_field=sort_field, sort_dir=sort_dir,
+        ))
+
+
+# ========================
 # Экспорт в Excel
 # ========================
 
@@ -530,3 +558,36 @@ class Report5ExportView(_ExcelExportBase):
             ws.cell(row_num, 7, d.get("comment", ""))
 
         return self._make_response(wb, "report5_repeats.xlsx")
+
+
+class Report6ExportView(_ExcelExportBase):
+    def get(self, request):
+        pcs_no = request.GET.get("pcs_no", "").strip()
+        data = report6_serial_number(pcs_no) if pcs_no else []
+        if pcs_no and not data:
+            return redirect("reports:report6")
+
+        sort_field, sort_dir = get_sort_params(request, "report6")
+        if sort_field:
+            data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report6"])
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Отчет по SN"
+        headers = [
+            "PCSNo", "Lot no.", "Production spec.", "Subop no",
+            "WorkstationName", "CREATEDATE", "result", "testData",
+        ]
+        for col, header in enumerate(headers, 1):
+            ws.cell(1, col, header)
+        for row_num, d in enumerate(data, 2):
+            ws.cell(row_num, 1, d["pcs_no"])
+            ws.cell(row_num, 2, d["lot_number"])
+            ws.cell(row_num, 3, d["production_spec"])
+            ws.cell(row_num, 4, d["subop_no"])
+            ws.cell(row_num, 5, d["workstation_name"])
+            ws.cell(row_num, 6, self._excel_value(d["created_date"]))
+            ws.cell(row_num, 7, d["result"])
+            ws.cell(row_num, 8, d["test_data"])
+
+        return self._make_response(wb, f"report6_{pcs_no}.xlsx")
