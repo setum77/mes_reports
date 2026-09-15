@@ -33,32 +33,56 @@
         a.text-primary { color: var(--primary); }
         .sort-link:hover { text-decoration: underline; }
         .sort-link.sorted { color: var(--primary); font-weight: 600; }
+        .navbar-btn { min-width: 100px; }
     </style>
     {% block extra_css %}{% endblock %}
 </head>
 <body>
-<nav class="navbar navbar-expand-lg navbar-dark bg-white">
-    <div class="container-fluid">
-        <a class="navbar-brand text-primary" href="{% url 'home' %}">MES Reports</a>
-        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarsExample">
+<nav class="navbar navbar-expand-lg navbar-light bg-white">
+    <div class="container-fluid align-items-center">
+        <a class="btn btn-outline-primary btn-sm text-decoration-none mb-2 mb-lg-0" href="{% url 'home' %}">MES Reports</a>
+        <button class="navbar-toggler mb-2 mb-lg-0" type="button" data-bs-toggle="collapse" data-bs-target="#navbarsExample">
             <span class="navbar-toggler-icon"></span>
         </button>
         <div class="collapse navbar-collapse" id="navbarsExample">
+            {% if request.resolver_match.url_name != 'home' %}
             <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-                <li class="nav-item"><a class="nav-link" href="{% url 'reports:report1' %}">Сводный отчет (заказы)</a></li>
-                <li class="nav-item"><a class="nav-link" href="{% url 'reports:report2' %}">Производительность линии</a></li>
-                <li class="nav-item"><a class="nav-link" href="{% url 'reports:report3' %}">Сводный по месяцам</a></li>
-                <li class="nav-item"><a class="nav-link" href="{% url 'reports:report4' %}">Отчет по браку</a></li>
-                <li class="nav-item"><a class="nav-link" href="{% url 'reports:report5' %}">Повторные проходы</a></li>
-                {% if user.is_staff %}
-                <li class="nav-item"><a class="nav-link" href="{% url 'uploads:upload_home' %}">Загрузка Excel</a></li>
-                {% endif %}
+                {% with current=request.resolver_match.url_name %}
+                <li class="nav-item mb-2 mb-lg-0 me-2">
+                    <a class="btn btn-sm navbar-btn text-decoration-none {% if current == 'report1' %}btn-primary active{% else %}btn-outline-primary{% endif %}"
+                       href="{% url 'reports:report1' %}">Сводный</a>
+                </li>
+                <li class="nav-item mb-2 mb-lg-0 me-2">
+                    <a class="btn btn-sm navbar-btn text-decoration-none {% if current == 'report2' %}btn-primary active{% else %}btn-outline-primary{% endif %}"
+                       href="{% url 'reports:report2' %}">Произв.</a>
+                </li>
+                <li class="nav-item mb-2 mb-lg-0 me-2">
+                    <a class="btn btn-sm navbar-btn text-decoration-none {% if current == 'report3' %}btn-primary active{% else %}btn-outline-primary{% endif %}"
+                       href="{% url 'reports:report3' %}">Месяцы</a>
+                </li>
+                <li class="nav-item mb-2 mb-lg-0 me-2">
+                    <a class="btn btn-sm navbar-btn text-decoration-none {% if current == 'report4' %}btn-primary active{% else %}btn-outline-primary{% endif %}"
+                       href="{% url 'reports:report4' %}">Брак</a>
+                </li>
+                <li class="nav-item mb-2 mb-lg-0 me-2">
+                    <a class="btn btn-sm navbar-btn text-decoration-none {% if current == 'report5' %}btn-primary active{% else %}btn-outline-primary{% endif %}"
+                       href="{% url 'reports:report5' %}">Проходы</a>
+                </li>
+                {% endwith %}
             </ul>
+            {% endif %}
             <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
                 {% if user.is_authenticated %}
-                <li class="nav-item"><a class="nav-link" href="{% url 'accounts:logout' %}">Выйти ({{ user.username }})</a></li>
+                {% if user.is_staff %}
+                <li class="nav-item mb-2 mb-lg-0 me-2">
+                    <a class="btn btn-outline-primary btn-sm text-decoration-none" href="{% url 'uploads:upload_home' %}">Загрузка Excel</a>
+                </li>
+                {% endif %}
+                <li class="nav-item mb-2 mb-lg-0">
+                    <a class="nav-link" href="{% url 'accounts:logout' %}">Выйти ({{ user.username }})</a></li>
                 {% else %}
-                <li class="nav-item"><a class="nav-link" href="{% url 'accounts:login' %}">Вход</a></li>
+                <li class="nav-item mb-2 mb-lg-0">
+                    <a class="nav-link" href="{% url 'accounts:login' %}">Вход</a></li>
                 {% endif %}
             </ul>
         </div>
