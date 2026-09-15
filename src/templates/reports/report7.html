@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% load report_tags %}
+
+{% block title %}Отчет 7: Выпуск за период{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="h3 mb-0">Выпуск за период</h1>
+    <a href="{% url 'reports:report7_export' %}?{{ request.GET.urlencode }}" class="btn btn-outline-success">Экспорт в Excel</a>
+</div>
+
+{% if error %}
+<div class="alert alert-danger">{{ error }}</div>
+{% endif %}
+
+<div class="card p-3 mb-4">
+    <form method="get" class="row g-3 align-items-end">
+        <div class="col-auto">
+            <label class="form-label">Период</label>
+            <select name="filter" class="form-select form-select-sm" onchange="togglePeriodFields(this.value)">
+                <option value="day" {% if filter_type == 'day' %}selected{% endif %}>День</option>
+                <option value="week" {% if filter_type == 'week' %}selected{% endif %}>Неделя</option>
+                <option value="month" {% if filter_type == 'month' %}selected{% endif %}>Месяц</option>
+                <option value="period" {% if filter_type == 'period' %}selected{% endif %}>Произвольный период</option>
+            </select>
+        </div>
+        <div class="col-auto" id="day-field" style="display:none;">
+            <label for="day" class="form-label">Дата</label>
+            <input id="day" name="day" type="date" class="form-control form-control-sm" value="{{ day_value }}">
+        </div>
+        <div class="col-auto" id="week-field" style="display:none;">
+            <label for="week" class="form-label">Неделя (Пн–Вс)</label>
+            <input id="week" name="week" type="week" class="form-control form-control-sm" value="{{ week_value }}">
+        </div>
+        <div class="col-auto" id="month-field" style="display:none;">
+            <label for="month" class="form-label">Месяц</label>
+            <select id="month" name="month" class="form-select form-select-sm">
+                {% for month_number in months %}
+                <option value="{{ month_number }}" {% if month_number == month_value %}selected{% endif %}>{{ month_number }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-auto" id="year-field" style="display:none;">
+            <label for="year" class="form-label">Год</label>
+            <select id="year" name="year" class="form-select form-select-sm">
+                {% for year_number in years %}
+                <option value="{{ year_number }}" {% if year_number == year_value %}selected{% endif %}>{{ year_number }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-auto" id="period-field" style="display:none;">
+            <label for="start" class="form-label">Дата с</label>
+            <input id="start" name="start" type="date" class="form-control form-control-sm" value="{{ start_date|date:'Y-m-d' }}">
+        </div>
+        <div class="col-auto" id="end-field" style="display:none;">
+            <label for="end" class="form-label">Дата по</label>
+            <input id="end" name="end" type="date" class="form-control form-control-sm" value="{{ end_date|date:'Y-m-d' }}">
+        </div>
+        <div class="col-auto">
+            <button type="submit" class="btn btn-primary btn-sm">Обновить</button>
+        </div>
+    </form>
+</div>
+
+<p class="text-muted small mb-3">Станция 130, result = OK. Период: {{ start_date|date:"Y-m-d" }} — {{ end_date|date:"Y-m-d" }}</p>
+
+<div class="stats-grid mb-4">
+    <div class="stats-card text-center">
+        <div class="text-muted small">Всего дней</div>
+        <div class="h5">{{ summary.total_days }}</div>
+    </div>
+    <div class="stats-card text-center">
+        <div class="text-muted small">Выпущено продукции</div>
+        <div class="h5">{{ summary.released_count }}</div>
+        <div class="text-muted small">уникальных SN</div>
+    </div>
+    <div class="stats-card text-center">
+        <div class="text-muted small">Лоты</div>
+        <div class="small">{{ summary.lots|default:"—" }}</div>
+    </div>
+</div>
+
+<div class="table-responsive">
+    <table class="table table-sm table-hover align-middle">
+        <thead class="table-light">
+            <tr>
+                <th>{% sort_link "pcs_no" "PCSNo - Серийный номер" %}</th>
+                <th>{% sort_link "lot_number" "Lot no. - Лот" %}</th>
+                <th>{% sort_link "production_spec" "Production spec. - Спецификация" %}</th>
+                <th>{% sort_link "created_date" "Date - Дата прохождения" %}</th>
+                <th>{% sort_link "created_date" "Time - Время прохождения" %}</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in data %}
+            <tr>
+                <td class="font-monospace"><a href="{% url 'reports:report6' %}?pcs_no={{ row.pcs_no|urlencode }}" class="text-decoration-none">{{ row.pcs_no }}</a></td>
+                <td>{{ row.lot_number }}</td>
+                <td>{{ row.production_spec }}</td>
+                <td class="text-nowrap">{{ row.created_date|date:"Y-m-d" }}</td>
+                <td class="text-nowrap">{{ row.created_date|date:"H:i:s" }}</td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="5" class="text-center text-muted py-4">Нет данных</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function togglePeriodFields(value) {
+    const fields = {
+        day: ['day-field'],
+        week: ['week-field'],
+        month: ['month-field', 'year-field'],
+        period: ['period-field', 'end-field']
+    };
+    Object.entries(fields).forEach(function(entry) {
+        entry[1].forEach(function(id) {
+            document.getElementById(id).style.display = value === entry[0] ? 'block' : 'none';
+        });
+    });
+}
+document.addEventListener('DOMContentLoaded', function() {
+    togglePeriodFields('{{ filter_type }}');
+});
+</script>
+{% endblock %}
