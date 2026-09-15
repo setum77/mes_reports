@@ -10,8 +10,12 @@ sys.path.insert(0, "src")
 django.setup()
 
 import pytest
-from datetime import datetime
+from datetime import date, datetime
+from io import BytesIO
+from django.contrib.auth.models import User
+from django.test import Client
 from django.utils import timezone
+from openpyxl import load_workbook
 
 from production.models import ProductionRecord
 from reports.queries import (
@@ -19,9 +23,16 @@ from reports.queries import (
     report2_line_productivity,
     report5_repeated_passes,
     report6_serial_number,
+    report7_station130_output,
     translate_workstation_name,
 )
-from reports.views import apply_sort, get_sort_params, SORTABLE_FIELDS
+from reports.views import (
+    _report7_period,
+    _report7_summary,
+    apply_sort,
+    get_sort_params,
+    SORTABLE_FIELDS,
+)
 
 
 @pytest.mark.django_db
@@ -176,6 +187,20 @@ def test_apply_sort_none_values():
     result_desc = apply_sort(data, "name", "desc", ["name"])
     assert [r["name"] for r in result_desc] == ["b", "a", None]
 
+    mixed = apply_sort(
+        [
+            {"name": "B"},
+            {"name": None},
+            {"name": "a"},
+            {"name": 2},
+            {"name": 10},
+        ],
+        "name",
+        "asc",
+        ["name"],
+    )
+    assert [r["name"] for r in mixed] == [2, 10, "a", "B", None]
+
 
 def test_apply_sort_invalid_field():
     """Сортировка по полю неиз списка allowed_fields возвращает данные без изменений."""
@@ -307,6 +332,125 @@ def test_report6_serial_number():
     assert [row["workstation_name"] for row in data] == ["PCB Loading", "Assembly"]
     assert data[0]["test_data"] == '{"value": 1}'
     assert report6_serial_number("MISSING") == []
+
+
+@pytest.mark.django_db
+def test_report7_station130_output_filters_and_deduplicates():
+    start_date = date(2026, 9, 14)
+    end_date = date(2026, 9, 20)
+    records = [
+        ProductionRecord(
+            lot_number="LOT-A", subop_no=130, pcs_no="SN-DUP",
+            production_spec="SPEC-A", result="OK",
+            created_date=timezone.make_aware(datetime(2026, 9, 15, 10, 0)),
+        ),
+        ProductionRecord(
+            lot_number="LOT-B", subop_no=130, pcs_no="SN-DUP",
+            production_spec="SPEC-B", result="OK",
+            created_date=timezone.make_aware(datetime(2026, 9, 16, 11, 0)),
+        ),
+        ProductionRecord(
+            lot_number="LOT-A", subop_no=130, pcs_no="SN-START",
+            production_spec="SPEC-A", result="OK",
+            created_date=timezone.make_aware(datetime(2026, 9, 14, 8, 0)),
+        ),
+        ProductionRecord(
+            lot_number="LOT-C", subop_no=130, pcs_no="SN-END",
+            production_spec="SPEC-C", result="OK",
+            created_date=timezone.make_aware(datetime(2026, 9, 20, 20, 0)),
+        ),
+        ProductionRecord(
+            lot_number="LOT-NG", subop_no=130, pcs_no="SN-NG",
+            result="NG", created_date=timezone.make_aware(datetime(2026, 9, 17, 10, 0)),
+        ),
+        ProductionRecord(
+            lot_number="LOT-OTHER", subop_no=129, pcs_no="SN-OTHER",
+            result="OK", created_date=timezone.make_aware(datetime(2026, 9, 17, 10, 0)),
+        ),
+        ProductionRecord(
+            lot_number="LOT-OUT", subop_no=130, pcs_no="SN-OUT",
+            result="OK", created_date=timezone.make_aware(datetime(2026, 9, 21, 10, 0)),
+        ),
+    ]
+    ProductionRecord.objects.bulk_create(records)
+
+    data = report7_station130_output(start_date, end_date)
+
+    assert [row["pcs_no"] for row in data] == ["SN-END", "SN-DUP", "SN-START"]
+    duplicate = next(row for row in data if row["pcs_no"] == "SN-DUP")
+    assert duplicate["lot_number"] == "LOT-B"
+    assert duplicate["production_spec"] == "SPEC-B"
+    assert duplicate["created_date"] == records[1].created_date
+
+
+class FakeRequest:
+    def __init__(self, get_params):
+        self.GET = get_params
+
+
+def test_report7_period_selection():
+    week = _report7_period(FakeRequest({"filter": "week", "week": "2026-W38"}))
+    assert week["start_date"] == date(2026, 9, 14)
+    assert week["end_date"] == date(2026, 9, 20)
+
+    month = _report7_period(FakeRequest({"filter": "month", "year": "2024", "month": "2"}))
+    assert month["start_date"] == date(2024, 2, 1)
+    assert month["end_date"] == date(2024, 2, 29)
+
+    invalid = _report7_period(
+        FakeRequest({"filter": "period", "start": "2026-09-20", "end": "2026-09-14"})
+    )
+    assert invalid["error"]
+
+    malformed = _report7_period(
+        FakeRequest({"filter": "period", "start": "not-a-date", "end": "2026-09-20"})
+    )
+    assert malformed["error"]
+    assert malformed["start_date"] == date.today()
+    assert malformed["end_date"] == date.today()
+
+    missing = _report7_period(
+        FakeRequest({"filter": "period", "start": "2026-09-14"})
+    )
+    assert missing["error"]
+    assert missing["start_date"] == date.today()
+    assert missing["end_date"] == date.today()
+
+
+def test_report7_summary():
+    data = [
+        {"pcs_no": "SN-1", "lot_number": "LOT-B"},
+        {"pcs_no": "SN-1", "lot_number": "LOT-B"},
+        {"pcs_no": "SN-2", "lot_number": "LOT-A"},
+    ]
+    summary = _report7_summary(data, date(2026, 9, 14), date(2026, 9, 20))
+    assert summary == {
+        "total_days": 7,
+        "released_count": 2,
+        "lots": "LOT-A, LOT-B",
+    }
+
+
+@pytest.mark.django_db
+def test_report7_export_is_available_to_regular_user():
+    user = User.objects.create_user(username="operator", password="password")
+    client = Client()
+    client.force_login(user)
+    ProductionRecord.objects.create(
+        lot_number="LOT-001", subop_no=130, pcs_no="SN-001",
+        production_spec="SPEC-001", result="OK",
+        created_date=timezone.make_aware(datetime(2026, 9, 15, 10, 30)),
+    )
+
+    response = client.get("/reports/7/export/", {"filter": "day", "day": "2026-09-15"})
+
+    assert response.status_code == 200
+    assert response["Content-Type"].startswith("application/vnd.openxmlformats")
+    workbook = load_workbook(BytesIO(response.content), read_only=True)
+    assert workbook.sheetnames == ["Сводка", "Выпуск"]
+    assert workbook["Выпуск"]["A1"].value == "PCSNo - Серийный номер"
+    assert workbook["Выпуск"]["A2"].value == "SN-001"
+    assert workbook["Сводка"]["B3"].value == 1
 
 
 def test_translate_workstation_name_by_position():

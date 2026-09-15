@@ -533,3 +533,38 @@ def report6_serial_number(pcs_no):
         }
         for record in records
     ]
+
+
+def report7_station130_output(start_date, end_date):
+    if not start_date or not end_date:
+        return []
+
+    sql = """
+        WITH ranked AS (
+            SELECT
+                pcs_no,
+                lot_number,
+                production_spec,
+                created_date,
+                ROW_NUMBER() OVER (
+                    PARTITION BY pcs_no
+                    ORDER BY created_date DESC, id DESC
+                ) AS rn
+            FROM production_productionrecord
+            WHERE subop_no = %s
+              AND result = 'OK'
+              AND created_date::date >= %s
+              AND created_date::date <= %s
+        )
+        SELECT
+            pcs_no,
+            lot_number,
+            production_spec,
+            created_date
+        FROM ranked
+        WHERE rn = 1
+        ORDER BY created_date DESC, pcs_no
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(sql, [STATION_BOL_END, start_date, end_date])
+        return dictfetchall(cursor)

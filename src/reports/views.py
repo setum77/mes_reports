@@ -1,7 +1,9 @@
 """
 Виды (views) для всех отчетов.
 """
-from datetime import datetime
+import calendar
+import re
+from datetime import datetime, timedelta
 from io import BytesIO
 from django.utils import timezone as dj_timezone
 
@@ -24,6 +26,7 @@ from reports.queries import (
     report4_defects,
     report5_repeated_passes,
     report6_serial_number,
+    report7_station130_output,
 )
 
 
@@ -42,6 +45,7 @@ SORTABLE_FIELDS = {
     "report5": ["pcs_no", "production_spec", "lot_number", "station", "dates", "comment"],
     "report6": ["pcs_no", "lot_number", "production_spec", "subop_no", "workstation_name",
                 "created_date", "result", "test_data"],
+    "report7": ["pcs_no", "lot_number", "production_spec", "created_date"],
 }
 
 
@@ -56,8 +60,10 @@ def apply_sort(data, sort_field, sort_dir, allowed_fields):
     def get_key(item):
         val = item.get(sort_field) if isinstance(item, dict) else None
         if val is None:
-            return (0,) if reverse else (1,)
-        return (0, val)
+            return (1,)
+        if isinstance(val, str):
+            return (0, 0, val.casefold())
+        return (0, 1, val)
 
     return sorted(data, key=get_key, reverse=reverse)
 
@@ -72,6 +78,118 @@ def get_sort_params(request, report_key):
     if sort_dir not in ("asc", "desc"):
         sort_dir = "asc"
     return sort_field, sort_dir
+
+
+REPORT7_PERIOD_TYPES = {"day", "week", "month", "period"}
+
+
+def _report7_date(value):
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _report7_int(value, default, lower, upper):
+    try:
+        parsed = int(value)
+        return parsed if lower <= parsed <= upper else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _report7_period(request):
+    today = dj_timezone.localdate()
+    filter_type = request.GET.get("filter", "day")
+    if filter_type not in REPORT7_PERIOD_TYPES:
+        filter_type = "day"
+
+    iso_year, iso_week, _ = today.isocalendar()
+    day_value = today.isoformat()
+    week_value = f"{iso_year}-W{iso_week:02d}"
+    month_value = today.month
+    year_value = today.year
+    start_date = today
+    end_date = today
+    error = ""
+
+    if filter_type == "day":
+        selected_day = _report7_date(request.GET.get("day")) or today
+        day_value = selected_day.isoformat()
+        iso_year, iso_week, _ = selected_day.isocalendar()
+        week_value = f"{iso_year}-W{iso_week:02d}"
+        month_value = selected_day.month
+        year_value = selected_day.year
+        start_date = selected_day
+        end_date = selected_day
+    elif filter_type == "week":
+        week_value = request.GET.get("week") or week_value
+        week_match = re.fullmatch(r"(\d{4})-W(\d{2})", week_value)
+        if week_match:
+            try:
+                start_date = datetime.fromisocalendar(
+                    int(week_match.group(1)), int(week_match.group(2)), 1
+                ).date()
+                end_date = start_date + timedelta(days=6)
+                day_value = start_date.isoformat()
+                month_value = start_date.month
+                year_value = start_date.year
+            except ValueError:
+                error = "Выбрана некорректная неделя."
+        else:
+            error = "Выбрана некорректная неделя."
+        if error:
+            start_date = today
+            end_date = today
+    elif filter_type == "month":
+        year_value = _report7_int(request.GET.get("year"), today.year, 2000, 2100)
+        month_value = _report7_int(request.GET.get("month"), today.month, 1, 12)
+        try:
+            last_day = calendar.monthrange(year_value, month_value)[1]
+            start_date = datetime(year_value, month_value, 1).date()
+            end_date = datetime(year_value, month_value, last_day).date()
+            day_value = start_date.isoformat()
+            iso_year, iso_week, _ = start_date.isocalendar()
+            week_value = f"{iso_year}-W{iso_week:02d}"
+        except ValueError:
+            error = "Выбран некорректный месяц."
+            start_date = today
+            end_date = today
+    else:
+        start_value = request.GET.get("start")
+        end_value = request.GET.get("end")
+        start_date = _report7_date(start_value)
+        end_date = _report7_date(end_value)
+        if start_date is None or end_date is None:
+            error = "Выбран некорректный период."
+            start_date = today
+            end_date = today
+        elif end_date < start_date:
+            error = "Дата начала не может быть позже даты окончания."
+            start_date = today
+            end_date = today
+        day_value = start_date.isoformat()
+
+    return {
+        "filter_type": filter_type,
+        "start_date": start_date,
+        "end_date": end_date,
+        "day_value": day_value,
+        "week_value": week_value,
+        "month_value": month_value,
+        "year_value": year_value,
+        "error": error,
+    }
+
+
+def _report7_summary(data, start_date, end_date):
+    lots = sorted({row.get("lot_number") for row in data if row.get("lot_number")})
+    unique_pcs = {row.get("pcs_no") for row in data if row.get("pcs_no")}
+    return {
+        "total_days": max(0, (end_date - start_date).days + 1),
+        "released_count": len(unique_pcs),
+        "lots": ", ".join(lots),
+    }
 
 
 class HomeView(TemplateView):
@@ -325,6 +443,31 @@ class Report6View(TemplateView):
         return self.render_to_response(self.get_context_data(
             data=data, pcs_no=pcs_no, exists=exists,
             sort_field=sort_field, sort_dir=sort_dir,
+        ))
+
+
+class Report7View(TemplateView):
+    template_name = "reports/report7.html"
+
+    def get(self, request, *args, **kwargs):
+        period = _report7_period(request)
+        data = report7_station130_output(period["start_date"], period["end_date"])
+
+        sort_field, sort_dir = get_sort_params(request, "report7")
+        if sort_field:
+            data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report7"])
+
+        if period["error"]:
+            messages.error(request, period["error"])
+
+        return self.render_to_response(self.get_context_data(
+            data=data,
+            summary=_report7_summary(data, period["start_date"], period["end_date"]),
+            months=range(1, 13),
+            years=range(2024, dj_timezone.localdate().year + 2),
+            sort_field=sort_field,
+            sort_dir=sort_dir,
+            **period,
         ))
 
 
@@ -591,3 +734,51 @@ class Report6ExportView(_ExcelExportBase):
             ws.cell(row_num, 8, d["test_data"])
 
         return self._make_response(wb, f"report6_{pcs_no}.xlsx")
+
+
+class Report7ExportView(_ExcelExportBase):
+    def get(self, request):
+        period = _report7_period(request)
+        data = report7_station130_output(period["start_date"], period["end_date"])
+
+        sort_field, sort_dir = get_sort_params(request, "report7")
+        if sort_field:
+            data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report7"])
+
+        summary = _report7_summary(data, period["start_date"], period["end_date"])
+        wb = openpyxl.Workbook()
+        summary_ws = wb.active
+        summary_ws.title = "Сводка"
+        summary_rows = [
+            ["Период", f'{period["start_date"].isoformat()} — {period["end_date"].isoformat()}'],
+            ["Всего дней", summary["total_days"]],
+            ["Выпущено продукции", summary["released_count"]],
+            ["Лоты", summary["lots"]],
+        ]
+        for row_num, row in enumerate(summary_rows, 1):
+            summary_ws.cell(row_num, 1, row[0])
+            summary_ws.cell(row_num, 2, row[1])
+
+        ws = wb.create_sheet("Выпуск")
+        headers = [
+            "PCSNo - Серийный номер",
+            "Lot no. - Лот",
+            "Production spec. - Спецификация",
+            "Date - Дата прохождения",
+            "Time - Время прохождения",
+        ]
+        for col, header in enumerate(headers, 1):
+            ws.cell(1, col, header)
+        for row_num, d in enumerate(data, 2):
+            created_date = d["created_date"]
+            ws.cell(row_num, 1, d["pcs_no"])
+            ws.cell(row_num, 2, d["lot_number"])
+            ws.cell(row_num, 3, d["production_spec"])
+            ws.cell(row_num, 4, created_date.date())
+            ws.cell(row_num, 5, created_date.time().replace(tzinfo=None))
+
+        filename = (
+            f'report7_{period["start_date"].isoformat()}'
+            f'_{period["end_date"].isoformat()}.xlsx'
+        )
+        return self._make_response(wb, filename)
