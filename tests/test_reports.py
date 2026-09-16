@@ -12,13 +12,16 @@ django.setup()
 import pytest
 from datetime import date, datetime
 from io import BytesIO
-from django.contrib.auth.models import User
-from django.test import Client, override_settings
+from django.contrib.auth.models import AnonymousUser, User
+from django.http import HttpResponseRedirect
+from django.test import Client, RequestFactory, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from openpyxl import load_workbook
 
-from production.models import ProductionRecord
+from mes_report3.admin_site import mes_admin_site
+from production.admin import LotInfoAdmin, ProductionRecordAdmin
+from production.models import LotInfo, ManualDefect, ProductionRecord, Report5Comment
 from reports.queries import (
     report1_orders,
     report2_line_productivity,
@@ -742,3 +745,247 @@ def test_report1_export_rejects_anonymous():
 
         assert response.status_code == 302
         assert response["Location"].endswith(reverse("accounts:login") + "?next=/reports/1/export/")
+
+
+@pytest.mark.django_db
+def test_admin_anonymous_and_regular_user_redirect():
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        anonymous_client = Client()
+        anonymous_response = anonymous_client.get("/admin/")
+        assert anonymous_response.status_code == 302
+        assert "/admin/login/" in anonymous_response["Location"]
+
+        user, _ = User.objects.get_or_create(
+            username="admin_regular",
+            defaults={"is_active": True, "is_staff": False, "is_superuser": False},
+        )
+        user.is_active = True
+        user.is_staff = False
+        user.is_superuser = False
+        user.save()
+
+        client = Client()
+        client.force_login(user)
+        response = client.get("/admin/")
+        assert response.status_code == 302
+        assert "/admin/login/" in response["Location"]
+
+
+@pytest.mark.django_db
+def test_admin_index_preserves_redirect_response(monkeypatch):
+    redirect_response = HttpResponseRedirect("/admin/login/")
+    monkeypatch.setattr(
+        "django.contrib.admin.sites.AdminSite.index",
+        lambda self, request, extra_context=None: redirect_response,
+    )
+
+    request_users = (
+        AnonymousUser(),
+        User(is_active=True, is_staff=False, is_superuser=False),
+    )
+    for request_user in request_users:
+        request = RequestFactory().get("/admin/")
+        request.user = request_user
+        assert mes_admin_site.index(request) is redirect_response
+
+
+@pytest.mark.django_db
+def test_admin_staff_sees_business_models_but_not_auth_models():
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        user, _ = User.objects.get_or_create(
+            username="admin_staff",
+            defaults={"is_active": True, "is_staff": True, "is_superuser": False},
+        )
+        user.is_active = True
+        user.is_staff = True
+        user.is_superuser = False
+        user.save()
+
+        client = Client()
+        client.force_login(user)
+        response = client.get("/admin/")
+
+        assert response.status_code == 200
+        app_list = response.context["app_list"]
+        model_names = {
+            model["object_name"]
+            for app in app_list
+            for model in app["models"]
+        }
+        assert {"ProductionRecord", "LotInfo", "ManualDefect", "Report5Comment"} <= model_names
+        assert "User" not in model_names
+        assert "Group" not in model_names
+        assert not any(app["app_label"] == "auth" for app in app_list)
+
+
+@pytest.mark.django_db
+def test_admin_superuser_sees_auth_models():
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        user, _ = User.objects.get_or_create(
+            username="admin_super",
+            defaults={"is_active": True, "is_staff": True, "is_superuser": True},
+        )
+        user.is_active = True
+        user.is_staff = True
+        user.is_superuser = True
+        user.save()
+
+        client = Client()
+        client.force_login(user)
+        response = client.get("/admin/")
+
+        assert response.status_code == 200
+        auth_app = next(app for app in response.context["app_list"] if app["app_label"] == "auth")
+        model_names = {model["object_name"] for model in auth_app["models"]}
+        assert {"User", "Group"} <= model_names
+
+
+@pytest.mark.django_db
+def test_admin_production_record_is_read_only_for_staff():
+    request = RequestFactory().get("/admin/")
+    request.user = User(is_active=True, is_staff=True, is_superuser=False)
+    model_admin = ProductionRecordAdmin(ProductionRecord, mes_admin_site)
+
+    assert model_admin.has_view_permission(request)
+    assert not model_admin.has_add_permission(request)
+    assert not model_admin.has_change_permission(request)
+    assert not model_admin.has_delete_permission(request)
+
+
+@pytest.mark.django_db
+def test_admin_lot_number_is_editable_on_create_and_read_only_on_change():
+    request = RequestFactory().get("/admin/")
+    request.user = User(is_active=True, is_staff=True, is_superuser=False)
+    model_admin = LotInfoAdmin(LotInfo, mes_admin_site)
+
+    assert "lot_number" not in model_admin.get_readonly_fields(request, obj=None)
+    lot = LotInfo(lot_number="LOT-ADMIN")
+    assert "lot_number" in model_admin.get_readonly_fields(request, obj=lot)
+
+
+@pytest.mark.django_db
+def test_admin_audit_fields_are_set_on_create():
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        user, _ = User.objects.get_or_create(
+            username="admin_audit",
+            defaults={"is_active": True, "is_staff": True, "is_superuser": False},
+        )
+        user.is_active = True
+        user.is_staff = True
+        user.is_superuser = False
+        user.save()
+
+        client = Client()
+        client.force_login(user)
+        defect_pcs_no = f"ADMIN-DEFECT-{user.pk}"
+        comment_pcs_no = f"ADMIN-COMMENT-{user.pk}"
+
+        defect_response = client.post(
+            "/admin/production/manualdefect/add/",
+            {
+                "pcs_no": defect_pcs_no,
+                "production_spec": "SPEC-ADMIN",
+                "lot_number": "LOT-ADMIN",
+                "reason": "Admin test",
+                "comment": "Created through admin",
+                "_save": "Save",
+            },
+        )
+        assert defect_response.status_code == 302
+        defect = ManualDefect.objects.get(pcs_no=defect_pcs_no)
+        assert defect.created_by == user.username
+        assert defect.created_at is not None
+
+        comment_response = client.post(
+            "/admin/production/report5comment/add/",
+            {
+                "pcs_no": comment_pcs_no,
+                "station_no": "17",
+                "lot_number": "LOT-ADMIN",
+                "comment": "Created through admin",
+                "_save": "Save",
+            },
+        )
+        assert comment_response.status_code == 302
+        comment = Report5Comment.objects.get(pcs_no=comment_pcs_no)
+        assert comment.created_by == user.username
+        assert comment.created_at is not None
+
+
+@pytest.mark.django_db
+def test_admin_dashboard_has_links_and_aggregate_metrics():
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        user, _ = User.objects.get_or_create(
+            username="admin_dashboard",
+            defaults={"is_active": True, "is_staff": True, "is_superuser": False},
+        )
+        user.is_active = True
+        user.is_staff = True
+        user.is_superuser = False
+        user.save()
+
+        LotInfo.objects.create(
+            lot_number="LOT-DASHBOARD",
+            production_spec="SPEC-DASHBOARD",
+            plan_total=25,
+        )
+        ProductionRecord.objects.create(
+            lot_number="LOT-DASHBOARD",
+            subop_no=17,
+            pcs_no="SN-DASHBOARD",
+            created_date=timezone.now(),
+            result="OK",
+            production_spec="SPEC-DASHBOARD",
+        )
+        ManualDefect.objects.create(
+            pcs_no="SN-DASHBOARD-DEFECT",
+            production_spec="SPEC-DASHBOARD",
+            lot_number="LOT-DASHBOARD",
+            created_by="seed",
+        )
+        Report5Comment.objects.create(
+            pcs_no="SN-DASHBOARD-COMMENT",
+            station_no=17,
+            lot_number="LOT-DASHBOARD",
+            comment="Dashboard test",
+            created_by="seed",
+        )
+
+        client = Client()
+        client.force_login(user)
+        response = client.get("/admin/")
+
+        assert response.status_code == 200
+        content = response.content.decode()
+        metrics = response.context["dashboard_metrics"]
+        assert metrics["lots"]["total"] >= 1
+        assert metrics["lots"]["plan_total"] >= 25
+        assert metrics["production_records"]["total"] >= 1
+        assert metrics["production_records"]["recent"] >= 1
+        assert metrics["manual_defects"]["total"] >= 1
+        assert metrics["manual_defects"]["recent"] >= 1
+        assert metrics["report5_comments"]["total"] >= 1
+        assert metrics["report5_comments"]["recent"] >= 1
+
+        for label in (
+            "Лоты",
+            "Записи производства",
+            "Ручной брак",
+            "Комментарии отчёта 5",
+            "Отчёт 1: Сводный",
+            "Отчёт 7: Выпуск",
+            "Загрузка Excel",
+        ):
+            assert label in content
+        assert "План: 25" in content
+        assert "За 7 дней:" in content
+        for url_name in (
+            "mes_admin:production_lotinfo_changelist",
+            "mes_admin:production_productionrecord_changelist",
+            "mes_admin:production_manualdefect_changelist",
+            "mes_admin:production_report5comment_changelist",
+            "reports:report1",
+            "reports:report7",
+            "uploads:upload_home",
+        ):
+            assert reverse(url_name) in content

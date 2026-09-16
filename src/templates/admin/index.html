@@ -1,0 +1,106 @@
+{% extends "admin/base_site.html" %}
+{% load i18n static log %}
+
+{% block extrastyle %}{{ block.super }}
+<style>
+.mes-dashboard { margin-bottom: 24px; }
+.mes-dashboard__intro { color: var(--body-quiet-color, #666); margin-top: -8px; }
+.mes-dashboard__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 18px 0; }
+.mes-dashboard__card { display: flex; flex-direction: column; gap: 5px; padding: 14px; border: 1px solid var(--hairline-color, #e2e5e7); border-radius: 6px; color: var(--link-fg, #4479ca); background: var(--darkened-bg, #f8f8f8); text-decoration: none; }
+.mes-dashboard__card:hover { border-color: var(--link-fg, #4479ca); background: var(--selected-row, #79aec8); color: #fff; }
+.mes-dashboard__label { font-size: 13px; font-weight: 600; }
+.mes-dashboard__card strong { font-size: 25px; line-height: 1.1; color: inherit; }
+.mes-dashboard__meta { font-size: 12px; opacity: .85; }
+.mes-dashboard__links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.button-accent { background: var(--primary, #79aec8); border-color: var(--primary, #79aec8); color: #fff; }
+</style>
+{% endblock %}
+
+{% block coltype %}colMS{% endblock %}
+
+{% block bodyclass %}{{ block.super }} dashboard{% endblock %}
+
+{% block nav-breadcrumbs %}{% endblock %}
+
+{% block nav-sidebar %}{% endblock %}
+
+{% block content %}
+<div id="content-main">
+  <div class="module mes-dashboard">
+    <h1>{{ title }}</h1>
+    <p class="mes-dashboard__intro">Оперативная панель производства и отчётов</p>
+
+    <div class="mes-dashboard__grid">
+      <a class="mes-dashboard__card" href="{% url 'mes_admin:production_lotinfo_changelist' %}">
+        <span class="mes-dashboard__label">Лоты</span>
+        <strong>{{ dashboard_metrics.lots.total }}</strong>
+        <span class="mes-dashboard__meta">План: {{ dashboard_metrics.lots.plan_total }}</span>
+      </a>
+
+      <a class="mes-dashboard__card" href="{% url 'mes_admin:production_productionrecord_changelist' %}">
+        <span class="mes-dashboard__label">Записи производства</span>
+        <strong>{{ dashboard_metrics.production_records.total }}</strong>
+        <span class="mes-dashboard__meta">За {{ dashboard_metrics.recent_days }} дней: {{ dashboard_metrics.production_records.recent }}</span>
+      </a>
+
+      <a class="mes-dashboard__card" href="{% url 'mes_admin:production_manualdefect_changelist' %}">
+        <span class="mes-dashboard__label">Ручной брак</span>
+        <strong>{{ dashboard_metrics.manual_defects.total }}</strong>
+        <span class="mes-dashboard__meta">За {{ dashboard_metrics.recent_days }} дней: {{ dashboard_metrics.manual_defects.recent }}</span>
+      </a>
+
+      <a class="mes-dashboard__card" href="{% url 'mes_admin:production_report5comment_changelist' %}">
+        <span class="mes-dashboard__label">Комментарии отчёта 5</span>
+        <strong>{{ dashboard_metrics.report5_comments.total }}</strong>
+        <span class="mes-dashboard__meta">За {{ dashboard_metrics.recent_days }} дней: {{ dashboard_metrics.report5_comments.recent }}</span>
+      </a>
+    </div>
+  </div>
+
+  <div class="module mes-dashboard">
+    <h2>Отчёты</h2>
+    <div class="mes-dashboard__links">
+      {% for link in report_links %}
+      <a class="button" href="{{ link.url }}">{{ link.label }}</a>
+      {% endfor %}
+      <a class="button button-accent" href="{{ upload_url }}">Загрузка Excel</a>
+    </div>
+  </div>
+
+  <div class="module">
+    <h2>Модели</h2>
+    {% include "admin/app_list.html" with app_list=app_list show_changelinks=True %}
+  </div>
+</div>
+{% endblock %}
+
+{% block sidebar %}
+<div id="content-related">
+  <div class="module" id="recent-actions-module">
+    <h2>{% translate "Recent actions" %}</h2>
+    <h3>{% translate "My actions" %}</h3>
+    {% get_admin_log 10 as admin_log for_user user %}
+    {% if not admin_log %}
+      <p>{% translate "None available" %}</p>
+    {% else %}
+      <ul class="actionlist">
+      {% for entry in admin_log %}
+        <li class="{% if entry.is_addition %}addlink{% endif %} {% if entry.is_change %}changelink{% endif %} {% if entry.is_deletion %}deletelink{% endif %}">
+          {% if entry.is_deletion or not entry.get_admin_url %}
+            {{ entry.object_repr }}
+          {% else %}
+            <a href="{{ entry.get_admin_url }}">{{ entry.object_repr }}</a>
+          {% endif %}
+          <br>
+          {% if entry.content_type %}
+            <span class="mini quiet">{% filter capfirst %}{{ entry.content_type.name }}{% endfilter %}</span>
+          {% else %}
+            <span class="mini quiet">{% translate "Unknown content" %}</span>
+          {% endif %}
+        </li>
+      {% endfor %}
+      </ul>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
