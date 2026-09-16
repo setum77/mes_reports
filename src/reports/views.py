@@ -11,6 +11,7 @@ import openpyxl
 from django.contrib import messages
 from django.http import HttpResponse, HttpResponseRedirect
 from django.shortcuts import redirect, render
+from django.contrib.auth.decorators import login_required
 from django.urls import reverse, reverse_lazy
 from django.utils.decorators import method_decorator
 from django.views import View
@@ -55,17 +56,21 @@ def apply_sort(data, sort_field, sort_dir, allowed_fields):
     """
     if sort_field not in allowed_fields or not isinstance(data, list):
         return data
-    reverse = sort_dir == "desc"
 
     def get_key(item):
         val = item.get(sort_field) if isinstance(item, dict) else None
         if val is None:
             return (1,)
+        if isinstance(val, (int, float)):
+            return (0, 0, val)
         if isinstance(val, str):
-            return (0, 0, val.casefold())
-        return (0, 1, val)
+            return (0, 1, val.casefold())
+        return (0, 2, val)
 
-    return sorted(data, key=get_key, reverse=reverse)
+    none_items = [item for item in data if get_key(item)[0] == 1]
+    non_none = [item for item in data if item not in none_items]
+    non_none.sort(key=get_key, reverse=(sort_dir == "desc"))
+    return non_none + none_items
 
 
 def get_sort_params(request, report_key):
@@ -204,32 +209,81 @@ class ReportListView(TemplateView):
 # Отчет 1: Сводный (заказы)
 # ========================
 
+REPORT1_PERIOD_TYPES = {"year", "period"}
+
+
+def _report1_summary(data, start_date, end_date):
+    return {
+        "total_days": max(0, (end_date - start_date).days + 1),
+        "released_lots": sum(1 for row in data if (row.get("Ok") or 0) > 0),
+        "production_total": sum(row.get("Production", 0) or 0 for row in data),
+        "ok_total": sum(row.get("Ok", 0) or 0 for row in data),
+        "diff_total": sum(row.get("Diff", 0) or 0 for row in data),
+    }
+
+
 class Report1View(TemplateView):
     template_name = "reports/report1.html"
 
     def get(self, request, *args, **kwargs):
-        filter_type = request.GET.get("filter", "30d")
-        if filter_type == "period":
-            s = request.GET.get("start")
-            e = request.GET.get("end")
-            if s and e:
-                start_date = datetime.strptime(s, "%Y-%m-%d").date()
-                end_date = datetime.strptime(e, "%Y-%m-%d").date()
-            else:
-                start_date, end_date = get_date_range("30d")
+        today = dj_timezone.localdate()
+        filter_type = request.GET.get("filter", "year")
+        if filter_type not in REPORT1_PERIOD_TYPES:
+            filter_type = "year"
+
+        year_value = today.year
+        start_date = today.replace(month=1, day=1)
+        end_date = today.replace(month=12, day=31)
+        error = ""
+
+        if filter_type == "year":
+            try:
+                year_value = int(request.GET.get("year", today.year))
+                start_date = datetime(year_value, 1, 1).date()
+                end_date = datetime(year_value, 12, 31).date()
+            except (ValueError, TypeError):
+                error = "Выбран некорректный год."
+                year_value = today.year
+                start_date = today.replace(month=1, day=1)
+                end_date = today.replace(month=12, day=31)
         else:
-            start_date, end_date = get_date_range(filter_type)
+            start_value = request.GET.get("start")
+            end_value = request.GET.get("end")
+            start_date = _report7_date(start_value)
+            end_date = _report7_date(end_value)
+            if start_date is None or end_date is None:
+                error = "Выбран некорректный период."
+                start_date = today.replace(month=1, day=1)
+                end_date = today.replace(month=12, day=31)
+            elif end_date < start_date:
+                error = "Дата начала не может быть позже даты окончания."
+                start_date = today.replace(month=1, day=1)
+                end_date = today.replace(month=12, day=31)
+
         data = report1_orders(start_date, end_date)
 
         sort_field, sort_dir = get_sort_params(request, "report1")
         if sort_field:
             data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report1"])
-            for i, row in enumerate(data, 1):
-                row["N"] = i
+        else:
+            # default sort by start ascending
+            data = apply_sort(data, "start", "asc", SORTABLE_FIELDS["report1"])
+        for i, row in enumerate(data, 1):
+            row["N"] = i
+
+        if error:
+            messages.error(request, error)
 
         return self.render_to_response(self.get_context_data(
-            data=data, filter_type=filter_type, start_date=start_date, end_date=end_date,
-            sort_field=sort_field, sort_dir=sort_dir,
+            data=data,
+            summary=_report1_summary(data, start_date, end_date),
+            filter_type=filter_type,
+            start_date=start_date,
+            end_date=end_date,
+            year_value=year_value,
+            years=range(2024, today.year + 2),
+            sort_field=sort_field,
+            sort_dir=sort_dir,
         ))
 
 
@@ -497,7 +551,7 @@ class _ExcelExportBase(View):
         return response
 
 
-@method_decorator(admin_required, name="dispatch")
+@method_decorator(login_required, name="dispatch")
 class Report1ExportView(_ExcelExportBase):
     def get(self, request):
         filter_type = request.GET.get("filter", "30d")

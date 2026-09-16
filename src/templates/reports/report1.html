@@ -11,30 +11,62 @@
     </div>
 </div>
 
+{% if error %}
+<div class="alert alert-danger">{{ error }}</div>
+{% endif %}
+
 <div class="card p-3 mb-4">
     <form method="get" class="row g-3 align-items-end">
         <div class="col-auto">
-            <label class="form-label">Фильтр по дате</label>
-            <select name="filter" class="form-select form-select-sm" onchange="togglePeriod(this.value)">
-                <option value="30d" {% if filter_type == '30d' %}selected{% endif %}>Последние 30 дней</option>
-                <option value="month" {% if filter_type == 'month' %}selected{% endif %}>Текущий месяц</option>
-                <option value="90d" {% if filter_type == '90d' %}selected{% endif %}>Последние 90 дней</option>
-                <option value="180d" {% if filter_type == '180d' %}selected{% endif %}>Последние 180 дней</option>
-                <option value="period" {% if filter_type == 'period' %}selected{% endif %}>Выбрать период</option>
+            <label class="form-label">Период</label>
+            <select name="filter" class="form-select form-select-sm" onchange="togglePeriodFields(this.value)">
+                <option value="year" {% if filter_type == 'year' %}selected{% endif %}>Год</option>
+                <option value="period" {% if filter_type == 'period' %}selected{% endif %}>Произвольный период</option>
             </select>
         </div>
-        <div class="col-auto" id="period-fields" style="display:none;">
-            <label class="form-label">Дата с</label>
-            <input type="date" name="start" class="form-control form-control-sm" {% if start_date %}value="{{ start_date|date:'Y-m-d' }}"{% endif %}>
+        <div class="col-auto" id="year-field" style="display:none;">
+            <label for="year" class="form-label">Год</label>
+            <select id="year" name="year" class="form-select form-select-sm">
+                {% for year_number in years %}
+                <option value="{{ year_number }}" {% if year_number == year_value %}selected{% endif %}>{{ year_number }}</option>
+                {% endfor %}
+            </select>
         </div>
-        <div class="col-auto" id="period-fields2" style="display:none;">
-            <label class="form-label">Дата по</label>
-            <input type="date" name="end" class="form-control form-control-sm" {% if end_date %}value="{{ end_date|date:'Y-m-d' }}"{% endif %}>
+        <div class="col-auto" id="period-field" style="display:none;">
+            <label for="start" class="form-label">Дата с</label>
+            <input id="start" name="start" type="date" class="form-control form-control-sm" value="{{ start_date|date:'Y-m-d' }}">
+        </div>
+        <div class="col-auto" id="end-field" style="display:none;">
+            <label for="end" class="form-label">Дата по</label>
+            <input id="end" name="end" type="date" class="form-control form-control-sm" value="{{ end_date|date:'Y-m-d' }}">
         </div>
         <div class="col-auto">
             <button type="submit" class="btn btn-primary btn-sm">Обновить</button>
         </div>
     </form>
+</div>
+
+<div class="stats-grid mb-4">
+    <div class="stats-card text-center">
+        <div class="text-muted small">Всего дней</div>
+        <div class="h4">{{ summary.total_days }}</div>
+    </div>
+    <div class="stats-card text-center">
+        <div class="text-muted small">Выпущено лотов</div>
+        <div class="h4">{{ summary.released_lots }}</div>
+    </div>
+    <div class="stats-card text-center">
+        <div class="text-muted small">Запущено в производство</div>
+        <div class="h4">{{ summary.production_total }}</div>
+    </div>
+    <div class="stats-card text-center">
+        <div class="text-muted small">Выпущено</div>
+        <div class="h4">{{ summary.ok_total }}</div>
+    </div>
+    <div class="stats-card text-center">
+        <div class="text-muted small">Не прошло сборку</div>
+        <div class="h4">{{ summary.diff_total }}</div>
+    </div>
 </div>
 
 <div class="table-responsive">
@@ -71,23 +103,21 @@
                 <td>{{ row.Ok }}</td>
                 <td class="{% if row.Diff > 0 %}text-danger fw-bold{% endif %}">{{ row.Diff }}</td>
                 <td>
-                    {% if row.Defect %}
-                        {% if user.is_staff and row.defect_sns %}
-                            {% for sn in row.defect_sns %}
-                                <a href="{% url 'reports:report4' %}?filter=30d&lot={{ row.LOT }}" class="d-block text-decoration-none small">{{ sn }}</a>
-                            {% endfor %}
-                        {% else %}
-                            <span class="small">{{ row.Defect }}</span>
-                        {% endif %}
+                    {% if row.defect_sns %}
+                        {% for sn in row.defect_sns %}
+                            <a href="{% url 'reports:report6' %}?pcs_no={{ sn|urlencode }}" class="d-block text-decoration-none small">{{ sn }}</a>
+                        {% endfor %}
+                    {% elif row.Defect %}
+                        <span class="small">{{ row.Defect }}</span>
                     {% endif %}
                 </td>
                 <td class="small text-nowrap">{% if row.start %}{{ row.start|date:"Y-m-d H:i" }}{% endif %}</td>
                 <td class="small text-nowrap">{% if row.finish %}{{ row.finish|date:"Y-m-d H:i" }}{% endif %}</td>
                 <td class="small">
                     {% if user.is_staff %}
-                    <a href="{% url 'reports:lot_edit' row.LOT %}" class="text-decoration-none" title="Редактировать">{{ row.comment|truncatechars:30 }}</a>
+                    <a href="{% url 'reports:lot_edit' row.LOT %}" class="text-decoration-none" title="Редактировать">{{ row.comment }}</a>
                     {% else %}
-                    {{ row.comment|truncatechars:30 }}
+                    {{ row.comment }}
                     {% endif %}
                 </td>
             </tr>
@@ -98,31 +128,28 @@
     </table>
 </div>
 
-<div class="card p-3 mt-3">
-    <h6>Сводка</h6>
-    <div class="row g-3">
-        <div class="col-auto"><span class="badge bg-secondary">Всего лотов: {{ data|length }}</span></div>
-        <div class="col-auto"><span class="badge bg-success">Всего Production: {{ data|sum:"Production" }}</span></div>
-        <div class="col-auto"><span class="badge bg-primary">Всего Ok: {{ data|sum:"Ok" }}</span></div>
-        <div class="col-auto"><span class="badge bg-danger">Всего Diff: {{ data|sum:"Diff" }}</span></div>
-    </div>
- </div>
+<div class="d-flex justify-content-end my-3">
+    <button type="button" class="btn btn-outline-primary btn-sm" onclick="window.scrollTo({top:0,behavior:'smooth'})">Наверх</button>
+</div>
 
 {% endblock %}
 
 {% block extra_js %}
 <script>
-function togglePeriod(val) {
-    const fields = document.getElementById('period-fields');
-    const fields2 = document.getElementById('period-fields2');
-    if (val === 'period') { fields.style.display='block'; fields2.style.display='block'; }
-    else { fields.style.display='none'; fields2.style.display='none'; }
+function togglePeriodFields(value) {
+    const fields = {
+        year: ['year-field'],
+        period: ['period-field', 'end-field']
+    };
+    Object.entries(fields).forEach(function(entry) {
+        entry[1].forEach(function(id) {
+            document.getElementById(id).style.display = value === entry[0] ? 'block' : 'none';
+        });
+    });
 }
-{% if filter_type == 'period' %}
 document.addEventListener('DOMContentLoaded', function() {
-    togglePeriod('period');
+    togglePeriodFields('{{ filter_type }}');
 });
-{% endif %}
 </script>
 {% endblock %}
 

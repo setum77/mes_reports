@@ -184,7 +184,7 @@ def report1_orders(start_date=None, end_date=None):
         ok = row["ok_count"]
         diff = production - ok
         defect_count = row["defect_count"]
-        defect_display = row["defect_sns"] if defect_count <= 10 else "SN не прошедших сборку более 10 штук"
+        defect_display = row["defect_sns"] if defect_count < 10 else "SN не прошедших сборку более 10 штук"
 
         from production.models import LotInfo
         lot_info = LotInfo.objects.filter(lot_number=row["lot_number"]).first()
@@ -198,7 +198,7 @@ def report1_orders(start_date=None, end_date=None):
             "Ok": ok,
             "Diff": diff,
             "Defect": defect_display,
-            "defect_sns": row["defect_sns"].split(", ") if row["defect_sns"] and defect_count <= 10 else [],
+            "defect_sns": row["defect_sns"].split(", ") if row["defect_sns"] and defect_count < 10 else [],
             "start": row["start_dt"],
             "finish": row["finish_dt"],
             "comment": lot_info.comment if lot_info else "",

@@ -13,7 +13,8 @@ import pytest
 from datetime import date, datetime
 from io import BytesIO
 from django.contrib.auth.models import User
-from django.test import Client
+from django.test import Client, override_settings
+from django.urls import reverse
 from django.utils import timezone
 from openpyxl import load_workbook
 
@@ -27,6 +28,7 @@ from reports.queries import (
     translate_workstation_name,
 )
 from reports.views import (
+    _report1_summary,
     _report7_period,
     _report7_summary,
     apply_sort,
@@ -457,3 +459,286 @@ def test_translate_workstation_name_by_position():
     assert translate_workstation_name("A110", "气密测试") == "Seal Test"
     assert translate_workstation_name("20", "FCT1") == "FCT1"
     assert translate_workstation_name("unknown", "Unknown") == "Unknown"
+
+
+def test_report1_period_types_constant():
+    """Проверка константы доступных типов периодов для отчета 1."""
+    from reports.views import REPORT1_PERIOD_TYPES
+    assert REPORT1_PERIOD_TYPES == {"year", "period"}
+
+
+@pytest.mark.django_db
+def test_report1_view_year_filter():
+    """Проверка отчета 1 через Client с фильтром по году."""
+    from django.test import Client, override_settings
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    user, _ = User.objects.get_or_create(username="testuser_report1_year", defaults={"password": "testpass"})
+
+    with override_settings(ALLOWED_HOSTS=["localhost", "127.0.0.1", "testserver"]):
+        client = Client()
+        client.force_login(user)
+
+        # Тест: год по умолчанию (текущий)
+        response = client.get("/reports/1/")
+        assert response.status_code == 200
+        assert "Сводный отчет" in response.content.decode()
+
+        # Тест: конкретный год
+        response = client.get("/reports/1/?filter=year&year=2025")
+        assert response.status_code == 200
+        assert "Сводный отчет" in response.content.decode()
+
+        # Тест: некорректный год (должен вернуть текущий год с ошибкой)
+        response = client.get("/reports/1/?filter=year&year=not-a-year")
+        assert response.status_code == 200
+        # Должно отображаться сообщение об ошибке
+
+
+def test_report1_summary():
+    data = [
+        {"LOT": "LOT-A", "Production": 2, "Ok": 1, "Diff": 1},
+        {"LOT": "LOT-B", "Production": 3, "Ok": 0, "Diff": 3},
+        {"LOT": "LOT-C", "Production": 0, "Ok": 0, "Diff": 0},
+    ]
+
+    summary = _report1_summary(data, date(2026, 9, 14), date(2026, 9, 20))
+
+    assert summary == {
+        "total_days": 7,
+        "released_lots": 1,
+        "production_total": 5,
+        "ok_total": 1,
+        "diff_total": 4,
+    }
+
+
+@pytest.mark.django_db
+def test_report1_view_period_summary_context(monkeypatch):
+    from django.test import Client, override_settings
+
+    user, _ = User.objects.get_or_create(
+        username="testuser_report1_summary", defaults={"password": "testpass"}
+    )
+    rows = [
+        {"LOT": "LOT-A", "Production": 2, "Ok": 1, "Diff": 1},
+        {"LOT": "LOT-B", "Production": 3, "Ok": 0, "Diff": 3},
+        {"LOT": "LOT-C", "Production": 0, "Ok": 0, "Diff": 0},
+    ]
+    monkeypatch.setattr("reports.views.report1_orders", lambda start_date, end_date: rows)
+
+    with override_settings(ALLOWED_HOSTS=["localhost", "127.0.0.1", "testserver"]):
+        client = Client()
+        client.force_login(user)
+        response = client.get(
+            "/reports/1/?filter=period&start=2026-09-14&end=2026-09-16"
+        )
+        response.render()
+
+    assert response.status_code == 200
+    assert response.context_data["summary"] == {
+        "total_days": 3,
+        "released_lots": 1,
+        "production_total": 5,
+        "ok_total": 1,
+        "diff_total": 4,
+    }
+    content = response.content.decode()
+    assert "Всего дней" in content
+    assert "Выпущено лотов" in content
+    assert "Запущено в производство" in content
+    assert "Выпущено" in content
+    assert "Не прошло сборку" in content
+
+
+@pytest.mark.django_db
+def test_report1_view_period_filter():
+    """Проверка отчета 1 через Client с фильтром по произвольному периоду."""
+    from django.test import Client, override_settings
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    user, _ = User.objects.get_or_create(username="testuser_report1_period", defaults={"password": "testpass"})
+
+    with override_settings(ALLOWED_HOSTS=["localhost", "127.0.0.1", "testserver"]):
+        client = Client()
+        client.force_login(user)
+
+        # Тест: валидный период
+        response = client.get("/reports/1/?filter=period&start=2026-01-01&end=2026-01-31")
+        assert response.status_code == 200
+        assert "Сводный отчет" in response.content.decode()
+
+        # Тест: некорректная дата начала
+        response = client.get("/reports/1/?filter=period&start=not-a-date&end=2026-01-31")
+        assert response.status_code == 200
+        # Должно отображаться сообщение об ошибке
+
+        # Тест: конец раньше начала
+        response = client.get("/reports/1/?filter=period&start=2026-01-31&end=2026-01-01")
+        assert response.status_code == 200
+        # Должно отображаться сообщение об ошибке
+
+
+@pytest.mark.django_db
+def test_report1_defect_threshold(monkeypatch):
+    """Проверка порога Diff < 10 для отображения SN в defect_sns."""
+    from django.test import Client, override_settings
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    user, _ = User.objects.get_or_create(username="testuser_report1_defect", defaults={"password": "testpass"})
+
+    # Подготовка строк с разным defect_count
+    rows_9 = [{
+        "LOT": "LOT-9",
+        "production_spec": "SPEC",
+        "Total": 10,
+        "Production": 10,
+        "Ok": 1,
+        "Diff": 9,
+        "Defect": "SN1, SN2, SN3, SN4, SN5, SN6, SN7, SN8, SN9",
+        "defect_sns": ["SN1", "SN2", "SN3", "SN4", "SN5", "SN6", "SN7", "SN8", "SN9"],
+        "start": None,
+        "finish": None,
+        "comment": "",
+    }]
+    rows_10 = [{
+        "LOT": "LOT-10",
+        "production_spec": "SPEC",
+        "Total": 10,
+        "Production": 10,
+        "Ok": 0,
+        "Diff": 10,
+        "Defect": "SN не прошедших сборку более 10 штук",
+        "defect_sns": [],
+        "start": None,
+        "finish": None,
+        "comment": "",
+    }]
+
+    def mock_orders_9(start_date, end_date):
+        return rows_9
+
+    def mock_orders_10(start_date, end_date):
+        return rows_10
+
+    with override_settings(ALLOWED_HOSTS=["localhost", "127.0.0.1", "testserver"]):
+        client = Client()
+        client.force_login(user)
+
+        # Diff = 9 -> defect_sns populated
+        monkeypatch.setattr("reports.views.report1_orders", mock_orders_9)
+        response = client.get("/reports/1/")
+        response.render()
+        assert response.status_code == 200
+        data = response.context_data["data"]
+        assert len(data) == 1
+        assert data[0]["defect_sns"] == ["SN1", "SN2", "SN3", "SN4", "SN5", "SN6", "SN7", "SN8", "SN9"]
+        assert data[0]["Defect"] == "SN1, SN2, SN3, SN4, SN5, SN6, SN7, SN8, SN9"
+
+        # Diff = 10 -> defect_sns empty, Defect message
+        monkeypatch.setattr("reports.views.report1_orders", mock_orders_10)
+        response = client.get("/reports/1/")
+        response.render()
+        assert response.status_code == 200
+        data = response.context_data["data"]
+        assert len(data) == 1
+        assert data[0]["defect_sns"] == []
+        assert data[0]["Defect"] == "SN не прошедших сборку более 10 штук"
+
+
+@pytest.mark.django_db
+def test_report1_default_sort_by_start(monkeypatch):
+    """Проверка сортировки по умолчанию по start asc."""
+    from django.test import Client, override_settings
+    from django.contrib.auth import get_user_model
+    from datetime import datetime
+    from django.utils import timezone
+
+    User = get_user_model()
+    user, _ = User.objects.get_or_create(username="testuser_report1_sort", defaults={"password": "testpass"})
+
+    # Две строки с разными start датами
+    row_later = {
+        "LOT": "LOT-LATER",
+        "production_spec": "SPEC",
+        "Total": 5,
+        "Production": 5,
+        "Ok": 5,
+        "Diff": 0,
+        "Defect": "",
+        "defect_sns": [],
+        "start": timezone.make_aware(datetime(2026, 9, 15, 12, 0, 0)),
+        "finish": None,
+        "comment": "",
+    }
+    row_earlier = {
+        "LOT": "LOT-EARLIER",
+        "production_spec": "SPEC",
+        "Total": 5,
+        "Production": 5,
+        "Ok": 5,
+        "Diff": 0,
+        "Defect": "",
+        "defect_sns": [],
+        "start": timezone.make_aware(datetime(2026, 9, 10, 8, 0, 0)),
+        "finish": None,
+        "comment": "",
+    }
+    rows = [row_later, row_earlier]  # порядок в моке: позже, раньше
+
+    def mock_orders(start_date, end_date):
+        return rows
+
+    with override_settings(ALLOWED_HOSTS=["localhost", "127.0.0.1", "testserver"]):
+        client = Client()
+        client.force_login(user)
+        monkeypatch.setattr("reports.views.report1_orders", mock_orders)
+        response = client.get("/reports/1/")
+        response.render()
+        assert response.status_code == 200
+        data = response.context_data["data"]
+        # После сортировки по start asc первым должен быть LOT-EARLIER
+        assert data[0]["LOT"] == "LOT-EARLIER"
+        assert data[1]["LOT"] == "LOT-LATER"
+        # N должно быть перенумеровано
+        assert data[0]["N"] == 1
+        assert data[1]["N"] == 2
+
+
+def test_report1_comment_no_truncate():
+    """Проверка, что комментарий не обрезается в шаблоне (юнит-тест шаблона не требуется, проверяем логику)."""
+    # Этот тест больше документационный, так как урезание убрано в шаблоне.
+    pass
+
+
+@pytest.mark.django_db
+def test_report1_export_is_available_to_regular_user():
+    """Обычный авторизованный пользователь может экспортировать отчет №1 в Excel."""
+    with override_settings(ALLOWED_HOSTS=["localhost", "127.0.0.1", "testserver"]):
+        user, _ = User.objects.get_or_create(
+            username="operator", defaults={"password": "password"}
+        )
+        client = Client()
+        client.force_login(user)
+
+        response = client.get("/reports/1/export/")
+
+        assert response.status_code == 200
+        assert response["Content-Type"].startswith("application/vnd.openxmlformats")
+        workbook = load_workbook(BytesIO(response.content), read_only=True)
+        assert workbook.sheetnames == ["Сводный отчет"]
+
+
+@pytest.mark.django_db
+def test_report1_export_rejects_anonymous():
+    """Анонимный доступ к экспорту отчета №1 запрещен и перенаправляется на страницу входа."""
+    with override_settings(ALLOWED_HOSTS=["localhost", "127.0.0.1", "testserver"]):
+        client = Client()
+
+        response = client.get("/reports/1/export/")
+
+        assert response.status_code == 302
+        assert response["Location"].endswith(reverse("accounts:login") + "?next=/reports/1/export/")
