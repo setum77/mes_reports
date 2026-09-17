@@ -32,6 +32,8 @@ from reports.queries import (
 )
 from reports.views import (
     _report1_summary,
+    _report2_period,
+    _report2_summary,
     _report7_period,
     _report7_summary,
     apply_sort,
@@ -99,6 +101,7 @@ def test_report2_line_productivity():
     assert len(data) == 1
     assert data[0]["fol_hours"] == 2.0
     assert data[0]["fol_production"] == 1
+    assert data[0]["has_data"] is True
 
 
 @pytest.mark.django_db
@@ -436,6 +439,129 @@ def test_report7_summary():
     }
 
 
+def test_report2_period_selection():
+    month = _report2_period(FakeRequest({"filter": "month", "year": "2024", "month": "2"}))
+    assert month["start_date"] == date(2024, 2, 1)
+    assert month["end_date"] == date(2024, 2, 29)
+
+    year = _report2_period(FakeRequest({"filter": "year", "year": "2025"}))
+    assert year["start_date"] == date(2025, 1, 1)
+    assert year["end_date"] == date(2025, 12, 31)
+
+    period = _report2_period(
+        FakeRequest({"filter": "period", "start": "2026-01-03", "end": "2026-01-05"})
+    )
+    assert period["start_date"] == date(2026, 1, 3)
+    assert period["end_date"] == date(2026, 1, 5)
+
+    invalid = _report2_period(
+        FakeRequest({"filter": "period", "start": "2026-01-05", "end": "2026-01-03"})
+    )
+    assert invalid["error"]
+
+
+def test_report2_summary_averages_only_active_days():
+    data = [
+        {"fol_hours": 2, "fol_production": 10, "fol_speed": 5, "bol_hours": 0, "bol_production": 0, "bol_speed": 0},
+        {"fol_hours": 0, "fol_production": 0, "fol_speed": 0, "bol_hours": 4, "bol_production": 12, "bol_speed": 3},
+        {"fol_hours": 4, "fol_production": 12, "fol_speed": 3, "bol_hours": 2, "bol_production": 6, "bol_speed": 3},
+    ]
+    summary = _report2_summary(data, date(2026, 1, 1), date(2026, 1, 3))
+    assert summary == {
+        "total_days": 3,
+        "fol_hours": 6,
+        "fol_production": 22,
+        "fol_speed": 4,
+        "fol_active_days": 2,
+        "bol_hours": 6,
+        "bol_production": 18,
+        "bol_speed": 3,
+        "bol_active_days": 2,
+    }
+
+
+def test_report2_view_default_year(monkeypatch):
+    import json
+    from reports.views import Report2View
+
+    rows = [
+        {"report_date": date(2026, 1, 1), "fol_hours": 2, "fol_production": 10, "fol_speed": 5, "bol_hours": 0, "bol_production": 0, "bol_speed": 0, "has_data": True},
+        {"report_date": date(2026, 1, 2), "fol_hours": 0, "fol_production": 0, "fol_speed": 0, "bol_hours": 0, "bol_production": 0, "bol_speed": 0, "has_data": False},
+    ]
+    monkeypatch.setattr("reports.views.report2_line_productivity", lambda start_date, end_date: rows)
+
+    request = RequestFactory().get("/reports/2/")
+    response = Report2View.as_view()(request)
+
+    assert response.status_code == 200
+    assert response["Cache-Control"] == "no-store"
+    response.render()
+    context = response.context_data
+    assert context["filter_type"] == "year"
+    assert b'id="year-field"' in response.content
+    assert b'name="year"' in response.content
+    assert b'class="fol-cell text-primary"' in response.content
+    assert b'class="bol-cell text-danger"' in response.content
+    assert b'.table .fol-cell { background-color: #eaf6ff; }' in response.content
+    assert b'.table .bol-cell { background-color: #fff0f0; }' in response.content
+    assert context["start_date"] == date(date.today().year, 1, 1)
+    assert context["end_date"] == date(date.today().year, 12, 31)
+    assert context["data"] == [rows[0]]
+    assert context["table_summary"]["fol_hours"] == 2
+    assert context["table_summary"]["fol_production"] == 10
+    chart_data = json.loads(context["chart_data"])
+    assert chart_data["dates"] == ["2026-01-01"]
+    assert chart_data["fol_hours"] == [2.0]
+    assert chart_data["fol_production"] == [10.0]
+    expected_days = 366 if date.today().year % 4 == 0 else 365
+    assert context["summary"]["total_days"] == expected_days
+
+
+def test_report2_export_includes_summary_and_charts(monkeypatch):
+    from types import SimpleNamespace
+    from reports.views import Report2ExportView
+
+    rows = [
+        {"report_date": date(2026, 1, 1), "fol_hours": 2, "fol_production": 10, "fol_speed": 5, "bol_hours": 0, "bol_production": 0, "bol_speed": 0, "has_data": True},
+        {"report_date": date(2026, 1, 2), "fol_hours": 0, "fol_production": 0, "fol_speed": 0, "bol_hours": 0, "bol_production": 0, "bol_speed": 0, "has_data": False},
+        {"report_date": date(2026, 1, 3), "fol_hours": 4, "fol_production": 12, "fol_speed": 3, "bol_hours": 2, "bol_production": 6, "bol_speed": 3, "has_data": True},
+    ]
+    monkeypatch.setattr("reports.views.report2_line_productivity", lambda start_date, end_date: rows)
+
+    request = RequestFactory().get("/reports/2/export/", {"filter": "period", "start": "2026-01-01", "end": "2026-01-03"})
+    request.user = SimpleNamespace(is_authenticated=True)
+    response = Report2ExportView.as_view()(request)
+
+    assert response.status_code == 200
+    workbook = load_workbook(BytesIO(response.content))
+    assert workbook.sheetnames == ["Производительность", "Сводка", "Диаграммы"]
+
+    sheet = workbook["Производительность"]
+    assert sheet["A2"].value == "2026-01-01"
+    assert sheet["A3"].value == "2026-01-03"
+    assert sheet.max_row == 3
+
+    summary = workbook["Сводка"]
+    assert summary["B2"].value == "01.01.2026 — 03.01.2026"
+    assert summary["B3"].value.date() == date(2026, 1, 1)
+    assert summary["B4"].value.date() == date(2026, 1, 3)
+    assert summary["B5"].value == 3
+    assert summary["B7"].value == "FOL"
+    assert summary["C7"].value == "BOL"
+    assert summary["B8"].value == 6
+    assert summary["C8"].value == 2
+    assert summary["B9"].value == 22
+    assert summary["C9"].value == 6
+    assert summary["B10"].value == 4
+    assert summary["C10"].value == 3
+    assert summary["B11"].value == 2
+    assert summary["C11"].value == 1
+
+    charts = workbook["Диаграммы"]._charts
+    assert len(charts) == 3
+    assert all(len(chart.series) == 2 for chart in charts)
+
+
 @pytest.mark.django_db
 def test_report7_export_is_available_to_regular_user():
     user = User.objects.create_user(username="operator", password="password")
@@ -735,16 +861,32 @@ def test_report1_export_is_available_to_regular_user():
         assert workbook.sheetnames == ["Сводный отчет"]
 
 
-@pytest.mark.django_db
-def test_report1_export_rejects_anonymous():
-    """Анонимный доступ к экспорту отчета №1 запрещен и перенаправляется на страницу входа."""
-    with override_settings(ALLOWED_HOSTS=["localhost", "127.0.0.1", "testserver"]):
-        client = Client()
+@pytest.mark.parametrize(
+    ("report_number", "view_name", "query_name"),
+    [
+        (1, "Report1ExportView", "report1_orders"),
+        (2, "Report2ExportView", "report2_line_productivity"),
+        (3, "Report3ExportView", "report3_monthly_productivity"),
+        (4, "Report4ExportView", "report4_defects"),
+        (5, "Report5ExportView", "report5_repeated_passes"),
+        (6, "Report6ExportView", "report6_serial_number"),
+        (7, "Report7ExportView", "report7_station130_output"),
+    ],
+)
+def test_report_exports_available_to_anonymous(monkeypatch, report_number, view_name, query_name):
+    """Все отчёты можно экспортировать в Excel без авторизации."""
+    from django.contrib.auth.models import AnonymousUser
+    from reports import views
 
-        response = client.get("/reports/1/export/")
+    monkeypatch.setattr(views, query_name, lambda *args, **kwargs: [])
+    view = getattr(views, view_name)
+    request = RequestFactory().get(f"/reports/{report_number}/export/")
+    request.user = AnonymousUser()
 
-        assert response.status_code == 302
-        assert response["Location"].endswith(reverse("accounts:login") + "?next=/reports/1/export/")
+    response = view.as_view()(request)
+
+    assert response.status_code == 200
+    assert response["Content-Type"].startswith("application/vnd.openxmlformats")
 
 
 @pytest.mark.django_db

@@ -2,16 +2,18 @@
 Виды (views) для всех отчетов.
 """
 import calendar
+import json
 import re
 from datetime import datetime, timedelta
 from io import BytesIO
 from django.utils import timezone as dj_timezone
 
 import openpyxl
+from openpyxl.chart import BarChart, Reference
+from openpyxl.styles import Alignment, Font, PatternFill
 from django.contrib import messages
 from django.http import HttpResponse, HttpResponseRedirect
 from django.shortcuts import redirect, render
-from django.contrib.auth.decorators import login_required
 from django.urls import reverse, reverse_lazy
 from django.utils.decorators import method_decorator
 from django.views import View
@@ -187,6 +189,103 @@ def _report7_period(request):
     }
 
 
+REPORT2_PERIOD_TYPES = {"month", "year", "period"}
+
+
+def _report2_int(value, default, lower, upper):
+    try:
+        parsed = int(value)
+        return parsed if lower <= parsed <= upper else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _report2_period(request):
+    today = dj_timezone.localdate()
+    filter_type = request.GET.get("filter", "year")
+    if filter_type not in REPORT2_PERIOD_TYPES:
+        filter_type = "year"
+
+    year_value = today.year
+    month_value = today.month
+    start_date = today.replace(month=1, day=1)
+    end_date = today.replace(month=12, day=31)
+    error = ""
+
+    if filter_type == "month":
+        year_value = _report2_int(request.GET.get("year"), today.year, 2000, 2100)
+        month_value = _report2_int(request.GET.get("month"), today.month, 1, 12)
+        try:
+            last_day = calendar.monthrange(year_value, month_value)[1]
+            start_date = datetime(year_value, month_value, 1).date()
+            end_date = datetime(year_value, month_value, last_day).date()
+        except ValueError:
+            error = "Выбран некорректный месяц."
+            start_date = today.replace(month=1, day=1)
+            end_date = today.replace(month=12, day=31)
+    elif filter_type == "year":
+        year_value = _report2_int(request.GET.get("year"), today.year, 2000, 2100)
+        try:
+            start_date = datetime(year_value, 1, 1).date()
+            end_date = datetime(year_value, 12, 31).date()
+        except ValueError:
+            error = "Выбран некорректный год."
+            start_date = today.replace(month=1, day=1)
+            end_date = today.replace(month=12, day=31)
+    else:
+        start_value = request.GET.get("start")
+        end_value = request.GET.get("end")
+        start_date = _report7_date(start_value)
+        end_date = _report7_date(end_value)
+        if start_date is None or end_date is None:
+            error = "Выбран некорректный период."
+            start_date = today.replace(month=1, day=1)
+            end_date = today.replace(month=12, day=31)
+        elif end_date < start_date:
+            error = "Дата начала не может быть позже даты окончания."
+            start_date = today.replace(month=1, day=1)
+            end_date = today.replace(month=12, day=31)
+
+    return {
+        "filter_type": filter_type,
+        "start_date": start_date,
+        "end_date": end_date,
+        "month_value": month_value,
+        "year_value": year_value,
+        "error": error,
+    }
+
+
+def _report2_summary(data, start_date, end_date):
+    total_days = max(0, (end_date - start_date).days + 1)
+
+    fol_hours_total = sum((row.get("fol_hours") or 0) for row in data)
+    fol_production_total = sum((row.get("fol_production") or 0) for row in data)
+    bol_hours_total = sum((row.get("bol_hours") or 0) for row in data)
+    bol_production_total = sum((row.get("bol_production") or 0) for row in data)
+
+    fol_active_days = sum(1 for row in data if (row.get("fol_hours") or 0) > 0)
+    bol_active_days = sum(1 for row in data if (row.get("bol_hours") or 0) > 0)
+
+    # Average speed = average of daily speeds where hours > 0
+    fol_speeds = [row.get("fol_speed", 0) for row in data if (row.get("fol_hours") or 0) > 0]
+    bol_speeds = [row.get("bol_speed", 0) for row in data if (row.get("bol_hours") or 0) > 0]
+    fol_speed_avg = round(sum(fol_speeds) / len(fol_speeds), 2) if fol_speeds else 0
+    bol_speed_avg = round(sum(bol_speeds) / len(bol_speeds), 2) if bol_speeds else 0
+
+    return {
+        "total_days": total_days,
+        "fol_hours": round(fol_hours_total, 2),
+        "fol_production": fol_production_total,
+        "fol_speed": fol_speed_avg,
+        "fol_active_days": fol_active_days,
+        "bol_hours": round(bol_hours_total, 2),
+        "bol_production": bol_production_total,
+        "bol_speed": bol_speed_avg,
+        "bol_active_days": bol_active_days,
+    }
+
+
 def _report7_summary(data, start_date, end_date):
     lots = sorted({row.get("lot_number") for row in data if row.get("lot_number")})
     unique_pcs = {row.get("pcs_no") for row in data if row.get("pcs_no")}
@@ -307,27 +406,43 @@ class Report2View(TemplateView):
     template_name = "reports/report2.html"
 
     def get(self, request, *args, **kwargs):
-        filter_type = request.GET.get("filter", "30d")
-        if filter_type == "period":
-            s = request.GET.get("start")
-            e = request.GET.get("end")
-            if s and e:
-                start_date = datetime.strptime(s, "%Y-%m-%d").date()
-                end_date = datetime.strptime(e, "%Y-%m-%d").date()
-            else:
-                start_date, end_date = get_date_range("30d")
-        else:
-            start_date, end_date = get_date_range(filter_type)
-        data = report2_line_productivity(start_date, end_date)
+        period = _report2_period(request)
+        data = report2_line_productivity(period["start_date"], period["end_date"])
 
         sort_field, sort_dir = get_sort_params(request, "report2")
         if sort_field:
             data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report2"])
 
-        return self.render_to_response(self.get_context_data(
-            data=data, filter_type=filter_type, start_date=start_date, end_date=end_date,
-            sort_field=sort_field, sort_dir=sort_dir,
+        # Filter to only show days with data
+        filtered_data = [row for row in data if row.get("has_data")]
+        summary = _report2_summary(filtered_data, period["start_date"], period["end_date"])
+        chart_data = {
+            "dates": [row["report_date"].isoformat() for row in filtered_data],
+            "fol_hours": [float(row.get("fol_hours") or 0) for row in filtered_data],
+            "bol_hours": [float(row.get("bol_hours") or 0) for row in filtered_data],
+            "fol_production": [float(row.get("fol_production") or 0) for row in filtered_data],
+            "bol_production": [float(row.get("bol_production") or 0) for row in filtered_data],
+            "fol_speed": [float(row.get("fol_speed") or 0) for row in filtered_data],
+            "bol_speed": [float(row.get("bol_speed") or 0) for row in filtered_data],
+        }
+
+        if period["error"]:
+            messages.error(request, period["error"])
+
+        today = dj_timezone.localdate()
+        response = self.render_to_response(self.get_context_data(
+            data=filtered_data,
+            summary=summary,
+            table_summary=summary,
+            chart_data=json.dumps(chart_data),
+            months=range(1, 13),
+            years=range(2024, today.year + 2),
+            sort_field=sort_field,
+            sort_dir=sort_dir,
+            **period,
         ))
+        response["Cache-Control"] = "no-store"
+        return response
 
 
 # ========================
@@ -551,7 +666,6 @@ class _ExcelExportBase(View):
         return response
 
 
-@method_decorator(login_required, name="dispatch")
 class Report1ExportView(_ExcelExportBase):
     def get(self, request):
         filter_type = request.GET.get("filter", "30d")
@@ -595,45 +709,155 @@ class Report1ExportView(_ExcelExportBase):
         return self._make_response(wb, "report1_orders.xlsx")
 
 
-@method_decorator(admin_required, name="dispatch")
 class Report2ExportView(_ExcelExportBase):
+    fol_color = "4361EE"
+    bol_color = "EF4444"
+    fol_fill = "EAF6FF"
+    bol_fill = "FFF0F0"
+    header_fill = "1F4E78"
+
+    @staticmethod
+    def _style_report2_header(cell, fill_color):
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor=fill_color)
+        cell.alignment = Alignment(horizontal="center")
+
+    @staticmethod
+    def _write_report2_summary(ws, period, summary):
+        ws["A1"] = "Отчёт №2: Производительность сборочной линии"
+        ws["A1"].font = Font(bold=True, size=14, color="FFFFFF")
+        ws["A1"].fill = PatternFill("solid", fgColor="1F4E78")
+        ws["A1"].alignment = Alignment(horizontal="center")
+
+        summary_rows = [
+            ["Период", f'{period["start_date"]:%d.%m.%Y} — {period["end_date"]:%d.%m.%Y}'],
+            ["Дата начала", period["start_date"]],
+            ["Дата окончания", period["end_date"]],
+            ["Всего дней", summary["total_days"]],
+            [],
+            ["Показатель", "FOL", "BOL"],
+            ["Часы работы", summary["fol_hours"], summary["bol_hours"]],
+            ["Выпуск продукции", summary["fol_production"], summary["bol_production"]],
+            ["Средняя скорость, шт/ч", summary["fol_speed"], summary["bol_speed"]],
+            ["Активных дней", summary["fol_active_days"], summary["bol_active_days"]],
+        ]
+        for row_num, row in enumerate(summary_rows, 2):
+            for col_num, value in enumerate(row, 1):
+                ws.cell(row_num, col_num, value)
+
+        for cell in ws[7]:
+            fill_color = "1F4E78"
+            if cell.column == 2:
+                fill_color = Report2ExportView.fol_color
+            elif cell.column == 3:
+                fill_color = Report2ExportView.bol_color
+            Report2ExportView._style_report2_header(cell, fill_color)
+        for row_num in range(8, 12):
+            ws.cell(row_num, 2).fill = PatternFill("solid", fgColor=Report2ExportView.fol_fill)
+            ws.cell(row_num, 3).fill = PatternFill("solid", fgColor=Report2ExportView.bol_fill)
+        for row_num in range(2, 6):
+            ws.cell(row_num, 1).font = Font(bold=True)
+        for row_num in range(3, 5):
+            ws.cell(row_num, 2).number_format = "dd.mm.yyyy"
+        for row_num in range(8, 11):
+            ws.cell(row_num, 2).number_format = "0.00"
+            ws.cell(row_num, 3).number_format = "0.00"
+
+        ws.column_dimensions["A"].width = 28
+        ws.column_dimensions["B"].width = 18
+        ws.column_dimensions["C"].width = 18
+        ws.freeze_panes = "A7"
+
+    @staticmethod
+    def _add_report2_chart(chart_ws, data_ws, title, fol_col, bol_col, anchor):
+        last_row = data_ws.max_row
+        if last_row < 2:
+            return
+
+        chart = BarChart()
+        chart.type = "col"
+        chart.style = 10
+        chart.title = title
+        chart.y_axis.title = "Значение"
+        chart.x_axis.title = "Дата"
+        chart.height = 8
+        chart.width = 15
+        chart.gapWidth = 50
+
+        fol_data = Reference(data_ws, min_col=fol_col, min_row=1, max_row=last_row)
+        bol_data = Reference(data_ws, min_col=bol_col, min_row=1, max_row=last_row)
+        categories = Reference(data_ws, min_col=1, min_row=2, max_row=last_row)
+        chart.add_data(fol_data, titles_from_data=True)
+        chart.add_data(bol_data, titles_from_data=True)
+        chart.set_categories(categories)
+        chart.series[0].graphicalProperties.solidFill = Report2ExportView.fol_color
+        chart.series[0].graphicalProperties.line.solidFill = Report2ExportView.fol_color
+        chart.series[1].graphicalProperties.solidFill = Report2ExportView.bol_color
+        chart.series[1].graphicalProperties.line.solidFill = Report2ExportView.bol_color
+        chart.legend.position = "b"
+        chart_ws.add_chart(chart, anchor)
+
     def get(self, request):
-        filter_type = request.GET.get("filter", "30d")
-        if filter_type == "period":
-            s = request.GET.get("start")
-            e = request.GET.get("end")
-            if s and e:
-                start_date = datetime.strptime(s, "%Y-%m-%d").date()
-                end_date = datetime.strptime(e, "%Y-%m-%d").date()
-            else:
-                start_date, end_date = get_date_range("30d")
-        else:
-            start_date, end_date = get_date_range(filter_type)
-        data = report2_line_productivity(start_date, end_date)
+        period = _report2_period(request)
+        data = report2_line_productivity(period["start_date"], period["end_date"])
 
         sort_field, sort_dir = get_sort_params(request, "report2")
         if sort_field:
             data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report2"])
 
+        data = [row for row in data if row.get("has_data")]
+        summary = _report2_summary(data, period["start_date"], period["end_date"])
+
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Производительность"
         headers = ["Дата", "FOL hours", "FOL production", "FOL speed", "BOL hours", "BOL production", "BOL speed"]
-        for col, h in enumerate(headers, 1):
-            ws.cell(1, col, h)
-        for row_num, d in enumerate(data, 2):
-            ws.cell(row_num, 1, d["report_date"].strftime("%Y-%m-%d") if hasattr(d["report_date"], "strftime") else str(d["report_date"]))
-            ws.cell(row_num, 2, d["fol_hours"])
-            ws.cell(row_num, 3, d["fol_production"])
-            ws.cell(row_num, 4, d["fol_speed"])
-            ws.cell(row_num, 5, d["bol_hours"])
-            ws.cell(row_num, 6, d["bol_production"])
-            ws.cell(row_num, 7, d["bol_speed"])
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(1, col, header)
+            fill_color = self.header_fill
+            if 2 <= col <= 4:
+                fill_color = self.fol_color
+            elif col >= 5:
+                fill_color = self.bol_color
+            self._style_report2_header(cell, fill_color)
+
+        for row_num, row in enumerate(data, 2):
+            ws.cell(row_num, 1, row["report_date"].strftime("%Y-%m-%d"))
+            ws.cell(row_num, 2, row["fol_hours"])
+            ws.cell(row_num, 3, row["fol_production"])
+            ws.cell(row_num, 4, row["fol_speed"])
+            ws.cell(row_num, 5, row["bol_hours"])
+            ws.cell(row_num, 6, row["bol_production"])
+            ws.cell(row_num, 7, row["bol_speed"])
+            for col in range(2, 5):
+                ws.cell(row_num, col).fill = PatternFill("solid", fgColor=self.fol_fill)
+            for col in range(5, 8):
+                ws.cell(row_num, col).fill = PatternFill("solid", fgColor=self.bol_fill)
+            for col in range(2, 8):
+                ws.cell(row_num, col).number_format = "0.00"
+
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = f"A1:G{ws.max_row}"
+        ws.column_dimensions["A"].width = 14
+        ws.column_dimensions["B"].width = 14
+        ws.column_dimensions["C"].width = 18
+        ws.column_dimensions["D"].width = 14
+        ws.column_dimensions["E"].width = 14
+        ws.column_dimensions["F"].width = 18
+        ws.column_dimensions["G"].width = 14
+
+        summary_ws = wb.create_sheet("Сводка")
+        self._write_report2_summary(summary_ws, period, summary)
+
+        charts_ws = wb.create_sheet("Диаграммы")
+        charts_ws.sheet_view.showGridLines = False
+        self._add_report2_chart(charts_ws, ws, "Время работы, ч", 2, 5, "A3")
+        self._add_report2_chart(charts_ws, ws, "Выпуск продукции, шт", 3, 6, "J3")
+        self._add_report2_chart(charts_ws, ws, "Скорость выпуска, шт/ч", 4, 7, "A20")
 
         return self._make_response(wb, "report2_line.xlsx")
 
 
-@method_decorator(admin_required, name="dispatch")
 class Report3ExportView(_ExcelExportBase):
     def get(self, request):
         year = request.GET.get("year")
@@ -666,7 +890,6 @@ class Report3ExportView(_ExcelExportBase):
         return self._make_response(wb, "report3_monthly.xlsx")
 
 
-@method_decorator(admin_required, name="dispatch")
 class Report4ExportView(_ExcelExportBase):
     def get(self, request):
         filter_type = request.GET.get("filter", "30d")
@@ -711,7 +934,6 @@ class Report4ExportView(_ExcelExportBase):
         return self._make_response(wb, "report4_defects.xlsx")
 
 
-@method_decorator(admin_required, name="dispatch")
 class Report5ExportView(_ExcelExportBase):
     def get(self, request):
         filter_type = request.GET.get("filter", "30d")

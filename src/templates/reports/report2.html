@@ -1,6 +1,15 @@
 {% extends "base.html" %}
 {% load report_tags %}
 
+{% block extra_css %}
+<style>
+.table .fol-cell { background-color: #eaf6ff; }
+.table .bol-cell { background-color: #fff0f0; }
+.chart-container { position: relative; height: 480px; margin-bottom: 1.5rem; }
+.chart-container canvas { width: 100% !important; height: 100% !important; }
+</style>
+{% endblock %}
+
 {% block title %}Отчет 2: Производительность{% endblock %}
 
 {% block content %}
@@ -9,25 +18,43 @@
     <a href="{% url 'reports:report2_export' %}?{{ request.GET.urlencode }}" class="btn btn-outline-success">Экспорт в Excel</a>
 </div>
 
+{% if error %}
+<div class="alert alert-danger">{{ error }}</div>
+{% endif %}
+
 <div class="card p-3 mb-4">
     <form method="get" class="row g-3 align-items-end">
         <div class="col-auto">
             <label class="form-label">Период</label>
-            <select name="filter" class="form-select form-select-sm" onchange="togglePeriod(this.value)">
-                <option value="30d" {% if filter_type == '30d' %}selected{% endif %}>Последние 30 дней</option>
-                <option value="month" {% if filter_type == 'month' %}selected{% endif %}>Текущий месяц</option>
-                <option value="90d" {% if filter_type == '90d' %}selected{% endif %}>Последние 90 дней</option>
-                <option value="180d" {% if filter_type == '180d' %}selected{% endif %}>Последние 180 дней</option>
-                <option value="period" {% if filter_type == 'period' %}selected{% endif %}>Выбрать период</option>
+            <select name="filter" class="form-select form-select-sm" onchange="togglePeriodFields(this.value)">
+                <option value="year" {% if filter_type == 'year' %}selected{% endif %}>Год</option>
+                <option value="month" {% if filter_type == 'month' %}selected{% endif %}>Месяц</option>
+                <option value="period" {% if filter_type == 'period' %}selected{% endif %}>Произвольный период</option>
             </select>
         </div>
-        <div class="col-auto" id="period-fields" style="display:none;">
-            <label class="form-label">Дата с</label>
-            <input type="date" name="start" class="form-control form-control-sm" {% if start_date %}value="{{ start_date|date:'Y-m-d' }}"{% endif %}>
+        <div class="col-auto" id="year-field" style="display:{% if filter_type == 'year' or filter_type == 'month' %}block{% else %}none{% endif %};">
+            <label for="year" class="form-label">Год</label>
+            <select id="year" name="year" class="form-select form-select-sm">
+                {% for year_number in years %}
+                <option value="{{ year_number }}" {% if year_number == year_value %}selected{% endif %}>{{ year_number }}</option>
+                {% endfor %}
+            </select>
         </div>
-        <div class="col-auto" id="period-fields2" style="display:none;">
-            <label class="form-label">Дата по</label>
-            <input type="date" name="end" class="form-control form-control-sm" {% if end_date %}value="{{ end_date|date:'Y-m-d' }}"{% endif %}>
+        <div class="col-auto" id="month-field" style="display:{% if filter_type == 'month' %}block{% else %}none{% endif %};">
+            <label for="month" class="form-label">Месяц</label>
+            <select id="month" name="month" class="form-select form-select-sm">
+                {% for month_number in months %}
+                <option value="{{ month_number }}" {% if month_number == month_value %}selected{% endif %}>{{ month_number }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-auto" id="period-field" style="display:{% if filter_type == 'period' %}block{% else %}none{% endif %};">
+            <label for="start" class="form-label">Дата с</label>
+            <input id="start" name="start" type="date" class="form-control form-control-sm" value="{{ start_date|date:'Y-m-d' }}">
+        </div>
+        <div class="col-auto" id="end-field" style="display:{% if filter_type == 'period' %}block{% else %}none{% endif %};">
+            <label for="end" class="form-label">Дата по</label>
+            <input id="end" name="end" type="date" class="form-control form-control-sm" value="{{ end_date|date:'Y-m-d' }}">
         </div>
         <div class="col-auto">
             <button type="submit" class="btn btn-primary btn-sm">Обновить</button>
@@ -35,34 +62,48 @@
     </form>
 </div>
 
-<div class="stats-grid mb-4">
-    <div class="stats-card text-center">
-        <h5>FOL</h5>
-        <div class="text-muted small">Время работы (ч)</div>
-        <div class="h5">{{ data|sum:"fol_hours" }}</div>
-        <div class="text-muted small">Производство: {{ data|sum:"fol_production" }}</div>
-        <div class="text-muted small">Скорость: {{ data|avg:"fol_speed" }}</div>
-    </div>
-    <div class="stats-card text-center">
-        <h5>BOL</h5>
-        <div class="text-muted small">Время работы (ч)</div>
-        <div class="h5">{{ data|sum:"bol_hours" }}</div>
-        <div class="text-muted small">Производство: {{ data|sum:"bol_production" }}</div>
-        <div class="text-muted small">Скорость: {{ data|avg:"bol_speed" }}</div>
-    </div>
-    <div class="stats-card text-center">
-        <h5>Всего дней</h5>
-        <div class="h5">{{ data|length }}</div>
+<p class="text-muted small mb-3">Период: {{ start_date|date:"Y-m-d" }} — {{ end_date|date:"Y-m-d" }}</p>
+
+<div class="card p-3 mb-4">
+    <div class="row text-center">
+        <div class="col-md-4" style="border-left: 4px solid #4361ee; background: #eaf6ff;">
+            <h5 class="text-primary">FOL</h5>
+            <div class="text-muted small">Время работы (ч)</div>
+            <div class="h5">{{ summary.fol_hours }}</div>
+            <div class="text-muted small">Выпущено продукции</div>
+            <div class="h5">{{ summary.fol_production }}</div>
+            <div class="text-muted small">Средняя скорость (шт/ч)</div>
+            <div class="h5">{{ summary.fol_speed }}</div>
+            <div class="text-muted small">Активных дней</div>
+            <div class="h5">{{ summary.fol_active_days }}</div>
+        </div>
+        <div class="col-md-4" style="border-left: 4px solid #ef4444; background: #fff0f0;">
+            <h5 class="text-danger">BOL</h5>
+            <div class="text-muted small">Время работы (ч)</div>
+            <div class="h5">{{ summary.bol_hours }}</div>
+            <div class="text-muted small">Выпущено продукции</div>
+            <div class="h5">{{ summary.bol_production }}</div>
+            <div class="text-muted small">Средняя скорость (шт/ч)</div>
+            <div class="h5">{{ summary.bol_speed }}</div>
+            <div class="text-muted small">Активных дней</div>
+            <div class="h5">{{ summary.bol_active_days }}</div>
+        </div>
+        <div class="col-md-4">
+            <h5>Период</h5>
+            <div class="text-muted small">Всего дней</div>
+            <div class="h5">{{ summary.total_days }}</div>
+        </div>
     </div>
 </div>
 
-<div class="row">
-    <div class="col-lg-8">
-        <canvas id="chartHours" height="100"></canvas>
-    </div>
-    <div class="col-lg-4">
-        <canvas id="chartSpeed" height="200"></canvas>
-    </div>
+<div class="chart-container card p-3">
+    <canvas id="chartHours"></canvas>
+</div>
+<div class="chart-container card p-3">
+    <canvas id="chartProduction"></canvas>
+</div>
+<div class="chart-container card p-3">
+    <canvas id="chartSpeed"></canvas>
 </div>
 
 <div class="table-responsive mt-4">
@@ -70,81 +111,147 @@
         <thead class="table-light">
             <tr>
                 <th>{% sort_link "report_date" "Дата" %}</th>
-                <th>{% sort_link "fol_hours" "FOL hours" %}</th>
-                <th>{% sort_link "fol_production" "FOL production" %}</th>
-                <th>{% sort_link "fol_speed" "FOL speed" %}</th>
-                <th>{% sort_link "bol_hours" "BOL hours" %}</th>
-                <th>{% sort_link "bol_production" "BOL production" %}</th>
-                <th>{% sort_link "bol_speed" "BOL speed" %}</th>
+                <th class="fol-cell text-primary">{% sort_link "fol_hours" "FOL hours" %}</th>
+                <th class="fol-cell text-primary">{% sort_link "fol_production" "FOL production" %}</th>
+                <th class="fol-cell text-primary">{% sort_link "fol_speed" "FOL speed" %}</th>
+                <th class="bol-cell text-danger">{% sort_link "bol_hours" "BOL hours" %}</th>
+                <th class="bol-cell text-danger">{% sort_link "bol_production" "BOL production" %}</th>
+                <th class="bol-cell text-danger">{% sort_link "bol_speed" "BOL speed" %}</th>
             </tr>
         </thead>
         <tbody>
             {% for row in data %}
             <tr>
                 <td class="small text-nowrap">{{ row.report_date|date:"Y-m-d" }}</td>
-                <td>{{ row.fol_hours }}</td>
-                <td>{{ row.fol_production }}</td>
-                <td>{{ row.fol_speed }}</td>
-                <td>{{ row.bol_hours }}</td>
-                <td>{{ row.bol_production }}</td>
-                <td>{{ row.bol_speed }}</td>
+                <td class="fol-cell">{{ row.fol_hours }}</td>
+                <td class="fol-cell">{{ row.fol_production }}</td>
+                <td class="fol-cell">{{ row.fol_speed }}</td>
+                <td class="bol-cell">{{ row.bol_hours }}</td>
+                <td class="bol-cell">{{ row.bol_production }}</td>
+                <td class="bol-cell">{{ row.bol_speed }}</td>
             </tr>
             {% empty %}
             <tr><td colspan="7" class="text-center text-muted py-4">Нет данных</td></tr>
             {% endfor %}
         </tbody>
+        <tfoot class="table-light">
+            <tr>
+                <th>Итого</th>
+                <th class="fol-cell">{{ table_summary.fol_hours }}</th>
+                <th class="fol-cell">{{ table_summary.fol_production }}</th>
+                <th class="fol-cell">{{ table_summary.fol_speed }}</th>
+                <th class="bol-cell">{{ table_summary.bol_hours }}</th>
+                <th class="bol-cell">{{ table_summary.bol_production }}</th>
+                <th class="bol-cell">{{ table_summary.bol_speed }}</th>
+            </tr>
+        </tfoot>
     </table>
 </div>
 
 {% endblock %}
 {% block extra_js %}
 <script>
-const ctx = document.getElementById('chartHours').getContext('2d');
-const ctx2 = document.getElementById('chartSpeed').getContext('2d');
-const dates = [{% for row in data %}"{{ row.report_date|date:'Y-m-d' }}",{% endfor %}];
-const folHours = [{% for row in data %}{{ row.fol_hours }},{% endfor %}];
-const bolHours = [{% for row in data %}{{ row.bol_hours }},{% endfor %}];
-const folSpeed = [{% for row in data %}{{ row.fol_speed }},{% endfor %}];
-const bolSpeed = [{% for row in data %}{{ row.bol_speed }},{% endfor %}];
-
-new Chart(ctx, {
-    type: 'line',
-    data: {
-        labels: dates,
-        datasets: [
-            {label: 'FOL hours', borderColor: '#4361ee', tension: 0.2, fill: false},
-            {label: 'BOL hours', borderColor: '#ef4444', tension: 0.2, fill: false}
-        ]
-    },
-    options: {responsive: true, plugins: {title: {display: true, text: 'Время работы линий'}}}
+function togglePeriodFields(value) {
+    const fields = {
+        year: ['year-field'],
+        month: ['month-field', 'year-field'],
+        period: ['period-field', 'end-field']
+    };
+    Object.entries(fields).forEach(function(entry) {
+        entry[1].forEach(function(id) {
+            document.getElementById(id).style.display = value === entry[0] ? 'block' : 'none';
+        });
+    });
+}
+document.addEventListener('DOMContentLoaded', function() {
+    togglePeriodFields('{{ filter_type }}');
 });
 
-new Chart(ctx2, {
+// Данные диаграмм формируются из тех же строк, что и таблица
+const chartData = {{ chart_data|safe }};
+const dates = chartData.dates;
+const folHours = chartData.fol_hours;
+const bolHours = chartData.bol_hours;
+const folProduction = chartData.fol_production;
+const bolProduction = chartData.bol_production;
+const folSpeed = chartData.fol_speed;
+const bolSpeed = chartData.bol_speed;
+
+// Inline plugin for value labels on top of bars
+const valueLabelPlugin = {
+    id: 'valueLabels',
+    afterDatasetsDraw: function(chart) {
+        const ctx = chart.ctx;
+        chart.data.datasets.forEach(function(dataset, datasetIndex) {
+            const meta = chart.getDatasetMeta(datasetIndex);
+            if (meta.hidden) return;
+            meta.data.forEach(function(bar, index) {
+                const value = dataset.data[index];
+                if (value === null || value === undefined || value === 0) return;
+                const x = bar.x;
+                const y = bar.y;
+                ctx.save();
+                ctx.font = '11px sans-serif';
+                ctx.fillStyle = '#333';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'bottom';
+                ctx.fillText(value.toLocaleString(undefined, {maximumFractionDigits: 2}), x, y - 4);
+                ctx.restore();
+            });
+        });
+    }
+};
+
+Chart.register(valueLabelPlugin);
+
+const commonOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    layout: {padding: {top: 20}},
+    plugins: {
+        legend: {display: true, position: 'top'},
+        title: {display: true, font: {size: 14}}
+    },
+    scales: {
+        x: {ticks: {autoSkip: true, maxRotation: 45, minRotation: 0}},
+        y: {beginAtZero: true, title: {display: true}}
+    }
+};
+
+new Chart(document.getElementById('chartHours').getContext('2d'), {
     type: 'bar',
     data: {
         labels: dates,
         datasets: [
-            {label: 'FOL speed', backgroundColor: '#4361ee'},
-            {label: 'BOL speed', backgroundColor: '#ef4444'}
+            {label: 'FOL hours', backgroundColor: '#4361ee', data: folHours},
+            {label: 'BOL hours', backgroundColor: '#ef4444', data: bolHours}
         ]
     },
-    options: {
-        responsive: true,
-        plugins: {title: {display: true, text: 'Скорость выпуска'}},
-        scales: {y: {beginAtZero: true}}
-    }
+    options: {...commonOptions, plugins: {...commonOptions.plugins, title: {display: true, text: 'Время работы линий (часы)'}}}
 });
 
-function togglePeriod(val) {
-    const fields = document.getElementById('period-fields');
-    const fields2 = document.getElementById('period-fields2');
-    if (val === 'period') { fields.style.display='block'; fields2.style.display='block'; }
-    else { fields.style.display='none'; fields2.style.display='none'; }
-}
-{% if filter_type == 'period' %}
-document.addEventListener('DOMContentLoaded', function() {
-    togglePeriod('period');
+new Chart(document.getElementById('chartProduction').getContext('2d'), {
+    type: 'bar',
+    data: {
+        labels: dates,
+        datasets: [
+            {label: 'FOL production', backgroundColor: '#4361ee', data: folProduction},
+            {label: 'BOL production', backgroundColor: '#ef4444', data: bolProduction}
+        ]
+    },
+    options: {...commonOptions, plugins: {...commonOptions.plugins, title: {display: true, text: 'Выпущенная продукция (шт)'}}}
 });
-{% endif %}
+
+new Chart(document.getElementById('chartSpeed').getContext('2d'), {
+    type: 'bar',
+    data: {
+        labels: dates,
+        datasets: [
+            {label: 'FOL speed', backgroundColor: '#4361ee', data: folSpeed},
+            {label: 'BOL speed', backgroundColor: '#ef4444', data: bolSpeed}
+        ]
+    },
+    options: {...commonOptions, plugins: {...commonOptions.plugins, title: {display: true, text: 'Скорость выпуска (шт/ч)'}, scales: {...commonOptions.scales, y: {beginAtZero: true, title: {display: true, text: 'шт/ч'}}}}}
+});
 </script>
 {% endblock %}

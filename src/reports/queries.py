@@ -292,6 +292,8 @@ def report2_line_productivity(start_date, end_date):
         r["bol_production"] = r["bol_production"] or 0
         r["bol_speed"] = round(r["bol_production"] / bol_hours, 2) if bol_hours > 0 else 0
 
+        r["has_data"] = (r["fol_hours"] > 0) or (r["bol_hours"] > 0)
+
     return rows
 
 
