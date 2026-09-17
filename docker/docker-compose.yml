@@ -18,6 +18,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    image: setum77/mes-reports:1.0.0
     restart: unless-stopped
     env_file:
       - .env
