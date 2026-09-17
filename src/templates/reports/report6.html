@@ -40,6 +40,7 @@
                 <th>{% sort_link "created_date" "CREATEDATE - Дата и время прохождения" %}</th>
                 <th>{% sort_link "result" "result - Статус" %}</th>
                 <th>{% sort_link "test_data" "testData - Данные теста" %}</th>
+                <th>{% sort_link "comment" "Комментарий" %}</th>
             </tr>
         </thead>
         <tbody>
@@ -53,9 +54,10 @@
                 <td class="text-nowrap">{{ row.created_date|date:"Y-m-d H:i:s" }}</td>
                 <td>{{ row.result }}</td>
                 <td class="test-data">{{ row.test_data }}</td>
+                <td class="small">{{ row.comment|default:'' }}</td>
             </tr>
             {% empty %}
-            <tr><td colspan="8" class="text-center text-muted py-4">Нет данных</td></tr>
+            <tr><td colspan="9" class="text-center text-muted py-4">Нет данных</td></tr>
             {% endfor %}
         </tbody>
     </table>

@@ -21,10 +21,11 @@ from openpyxl import load_workbook
 
 from mes_report3.admin_site import mes_admin_site
 from production.admin import LotInfoAdmin, ProductionRecordAdmin
-from production.models import LotInfo, ManualDefect, ProductionRecord, Report5Comment
+from production.models import LotInfo, ManualDefect, ProductionRecord, Report5Comment, SNComment
 from reports.queries import (
     report1_orders,
     report2_line_productivity,
+    report4_defects,
     report5_repeated_passes,
     report6_serial_number,
     report7_station130_output,
@@ -125,6 +126,124 @@ def test_report5_repeated_passes():
     assert len(data) == 1
     assert data[0]["pcs_no"] == "PCS1"
     assert data[0]["station"] == 20
+
+
+@pytest.mark.django_db
+def test_report4_last_ok_station_and_sn_comment():
+    start = date(2026, 9, 1)
+    end = date(2026, 9, 30)
+    pcs_no = "SN-REPORT4"
+
+    ProductionRecord.objects.create(
+        lot_number="LOT-REPORT4",
+        subop_no=10,
+        pcs_no=pcs_no,
+        created_date=timezone.make_aware(datetime(2026, 9, 1, 8, 0)),
+        result="OK",
+        production_spec="SPEC-REPORT4",
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT-REPORT4",
+        subop_no=20,
+        pcs_no=pcs_no,
+        created_date=timezone.make_aware(datetime(2026, 9, 1, 9, 0)),
+        result="OK",
+        production_spec="SPEC-REPORT4"
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT-REPORT4",
+        subop_no=100,
+        pcs_no=pcs_no,
+        created_date=timezone.make_aware(datetime(2026, 9, 1, 11, 0)),
+        result="OK",
+        production_spec="SPEC-REPORT4"
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT-REPORT4",
+        subop_no=120,
+        pcs_no=pcs_no,
+        created_date=timezone.make_aware(datetime(2026, 9, 1, 10, 0)),
+        result="OK",
+        production_spec="SPEC-REPORT4"
+    )
+    SNComment.objects.create(pcs_no=pcs_no, comment="Отчёт 4", created_by="admin")
+
+    data = report4_defects(start, end)
+    row = next(item for item in data if item["pcs_no"] == pcs_no)
+
+    assert row["last_station"] == "PIN Test"
+    assert row["last_station_date"] == timezone.make_aware(datetime(2026, 9, 1, 10, 0))
+    assert row["comment"] == "Отчёт 4"
+
+
+@pytest.mark.django_db
+def test_report4_manual_comment_is_used_without_sn_comment():
+    pcs_no = "SN-MANUAL-REPORT4"
+    ManualDefect.objects.create(
+        pcs_no=pcs_no,
+        production_spec="SPEC-MANUAL",
+        lot_number="LOT-MANUAL",
+        comment="Ручной комментарий",
+        created_by="admin",
+    )
+
+    data = report4_defects()
+    row = next(item for item in data if item["pcs_no"] == pcs_no)
+
+    assert row["last_station"] == ""
+    assert row["comment"] == "Ручной комментарий"
+
+
+@pytest.mark.django_db
+def test_report6_includes_sn_comment():
+    pcs_no = "SN-REPORT6-COMMENT"
+    ProductionRecord.objects.create(
+        lot_number="LOT-REPORT6",
+        subop_no=20,
+        pcs_no=pcs_no,
+        created_date=timezone.make_aware(datetime(2026, 9, 1, 9, 0)),
+        result="OK",
+        production_spec="SPEC-REPORT6"
+    )
+    SNComment.objects.create(pcs_no=pcs_no, comment="SN-комментарий", created_by="admin")
+
+    data = report6_serial_number(pcs_no)
+
+    assert data[0]["comment"] == "SN-комментарий"
+
+
+@pytest.mark.django_db
+def test_sn_comment_edit_view_requires_admin_and_saves_comment():
+    user = User.objects.create_user(
+        username="report4-editor",
+        password="password",
+        is_active=True,
+        is_staff=True,
+    )
+    pcs_no = "SN-EDIT-COMMENT"
+    ProductionRecord.objects.create(
+        lot_number="LOT-EDIT",
+        subop_no=10,
+        pcs_no=pcs_no,
+        created_date=timezone.make_aware(datetime(2026, 9, 1, 8, 0)),
+        result="OK",
+        production_spec="SPEC-EDIT"
+    )
+    client = Client()
+
+    response = client.get(f"/reports/comment/{pcs_no}/edit/")
+    assert response.status_code == 302
+
+    client.force_login(user)
+    response = client.post(
+        f"/reports/comment/{pcs_no}/edit/",
+        {"comment": "Новый комментарий"},
+    )
+
+    assert response.status_code == 302
+    assert SNComment.objects.filter(pcs_no=pcs_no).exists()
+    assert SNComment.objects.get(pcs_no=pcs_no).comment == "Новый комментарий"
+    assert SNComment.objects.get(pcs_no=pcs_no).created_by == "report4-editor"
 
 
 @pytest.mark.django_db

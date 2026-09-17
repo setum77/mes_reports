@@ -2,7 +2,7 @@ from django.contrib import admin
 
 from mes_report3.admin_site import mes_admin_site
 
-from .models import ProductionRecord, LotInfo, ManualDefect, Report5Comment
+from .models import ProductionRecord, LotInfo, ManualDefect, SNComment, Report5Comment
 
 
 class StaffBusinessModelAdmin(admin.ModelAdmin):
@@ -97,6 +97,28 @@ class ManualDefectAdmin(StaffBusinessModelAdmin):
         super().save_model(request, obj, form, change)
 
 
+class SNCommentAdmin(StaffBusinessModelAdmin):
+    fieldsets = (
+        (None, {
+            "fields": ("pcs_no", "comment"),
+        }),
+        ("Аудит", {
+            "fields": ("created_by", "created_at", "updated_at"),
+            "classes": ("collapse",),
+        }),
+    )
+    list_display = ["pcs_no", "created_by", "updated_at"]
+    search_fields = ["pcs_no", "comment"]
+    list_filter = ["created_at", "updated_at", "created_by"]
+    list_per_page = 50
+    readonly_fields = ["created_by", "created_at", "updated_at"]
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.created_by = request.user.get_username()
+        super().save_model(request, obj, form, change)
+
+
 class Report5CommentAdmin(StaffBusinessModelAdmin):
     fieldsets = (
         (None, {
@@ -125,4 +147,5 @@ class Report5CommentAdmin(StaffBusinessModelAdmin):
 mes_admin_site.register(ProductionRecord, ProductionRecordAdmin)
 mes_admin_site.register(LotInfo, LotInfoAdmin)
 mes_admin_site.register(ManualDefect, ManualDefectAdmin)
+mes_admin_site.register(SNComment, SNCommentAdmin)
 mes_admin_site.register(Report5Comment, Report5CommentAdmin)

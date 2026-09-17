@@ -52,6 +52,8 @@
                 <th>{% sort_link "production_spec" "Production spec." %}</th>
                 <th>{% sort_link "lot_number" "Лот" %}</th>
                 <th>{% sort_link "entry_date" "Дата поступления в производство" %}</th>
+                <th>{% sort_link "last_station" "Последняя станция" %}</th>
+                <th>{% sort_link "last_station_date" "Дата прохождения последней станции" %}</th>
                 <th>{% sort_link "comment" "Комментарий" %}</th>
             </tr>
         </thead>
@@ -59,14 +61,23 @@
             {% for row in data %}
             <tr>
                 <td>{{ forloop.counter }}</td>
-                <td class="font-monospace">{{ row.pcs_no }}</td>
+                <td class="font-monospace">
+                    <a href="{% url 'reports:report6' %}?pcs_no={{ row.pcs_no|urlencode }}" class="text-decoration-none">{{ row.pcs_no }}</a>
+                </td>
                 <td>{{ row.production_spec }}</td>
                 <td>{{ row.lot_number|default:'' }}</td>
                 <td class="small text-nowrap">{% if row.entry_date %}{{ row.entry_date|date:"Y-m-d H:i" }}{% endif %}</td>
-                <td>{{ row.comment|default:'' }}</td>
+                <td>{{ row.last_station|default:'' }}</td>
+                <td class="small text-nowrap">{% if row.last_station_date %}{{ row.last_station_date|date:"Y-m-d H:i:s" }}{% endif %}</td>
+                <td class="small">
+                    {{ row.comment|default:'' }}
+                    {% if user.is_staff %}
+                    <a href="{% url 'reports:sn_comment_edit' row.pcs_no %}" class="text-decoration-none ms-2" title="Редактировать комментарий">Редактировать</a>
+                    {% endif %}
+                </td>
             </tr>
             {% empty %}
-            <tr><td colspan="6" class="text-center text-muted py-4">Нет данных</td></tr>
+            <tr><td colspan="8" class="text-center text-muted py-4">Нет данных</td></tr>
             {% endfor %}
         </tbody>
     </table>

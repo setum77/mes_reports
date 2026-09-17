@@ -355,13 +355,88 @@ def report3_monthly_productivity(start_date, end_date):
     return _aggregate_monthly(daily_rows, start_date.year)
 
 
+REPORT4_STATION_NAMES = {
+    20: "FCT1",
+    30: "Pasma Cleaning",
+    50: "Assembly",
+    60: "Standing",
+    70: "High-Temperature Aging",
+    80: "FCT2",
+    90: "Firmware Flashing (Programming)",
+    100: "Firmware Verification",
+    110: "Seal Test",
+    120: "PIN Test",
+    130: "Labeling",
+}
+
+
+def _report4_last_ok_rows(pcs_numbers):
+    unique_pcs_numbers = list(dict.fromkeys(pcs_numbers))
+    if not unique_pcs_numbers:
+        return {}
+
+    sql = """
+        WITH station_order(station_no, station_rank) AS (
+            VALUES
+                (20, 1),
+                (30, 2),
+                (50, 3),
+                (60, 4),
+                (70, 5),
+                (80, 6),
+                (90, 7),
+                (100, 8),
+                (110, 9),
+                (120, 10),
+                (130, 11)
+        ),
+        last_ok_per_station AS (
+            SELECT
+                r.pcs_no,
+                r.subop_no,
+                MAX(r.created_date) AS last_ok_at
+            FROM production_productionrecord AS r
+            JOIN station_order AS so
+              ON so.station_no = r.subop_no
+            WHERE UPPER(TRIM(COALESCE(r.result, ''))) = 'OK'
+            GROUP BY r.pcs_no, r.subop_no
+        ),
+        ranked_last_ok AS (
+            SELECT
+                los.pcs_no,
+                los.subop_no AS last_ok_station,
+                los.last_ok_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY los.pcs_no
+                    ORDER BY so.station_rank DESC, los.last_ok_at DESC
+                ) AS rn
+            FROM last_ok_per_station AS los
+            JOIN station_order AS so
+              ON so.station_no = los.subop_no
+            WHERE los.pcs_no = ANY(%s)
+        )
+        SELECT
+            pcs_no,
+            last_ok_station,
+            last_ok_at
+        FROM ranked_last_ok
+        WHERE rn = 1
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(sql, [unique_pcs_numbers])
+        return {
+            row["pcs_no"]: row
+            for row in dictfetchall(cursor)
+        }
+
+
 def report4_defects(start_date=None, end_date=None, limit=None):
     """
     Отчет 4: Брак.
     BU прошедшие 010 с OK, но не прошедшие 130 с OK + ручные браки.
     limit: если задан, ограничивает количество записей (для "последних N").
     """
-    from production.models import ManualDefect
+    from production.models import ManualDefect, SNComment
 
     params = []
     date_clause = ""
@@ -369,7 +444,9 @@ def report4_defects(start_date=None, end_date=None, limit=None):
         date_clause = "AND r.created_date::date >= %s AND r.created_date::date <= %s"
         params.extend([start_date, end_date])
 
-    limit_clause = f"LIMIT {limit}" if limit else ""
+    limit_clause = "LIMIT %s" if limit else ""
+    if limit:
+        params.append(limit)
 
     sql = f"""
         SELECT
@@ -378,21 +455,24 @@ def report4_defects(start_date=None, end_date=None, limit=None):
             p.lot_number,
             p.entry_date
         FROM (
-            SELECT DISTINCT
+            SELECT
                 r.pcs_no,
                 r.production_spec,
                 r.lot_number,
-                MIN(r.created_date) as entry_date
-            FROM production_productionrecord r
-            WHERE r.subop_no = {STATION_FOL_START} AND r.result = 'OK'
-            {date_clause}
-            AND r.pcs_no NOT IN (
-                SELECT DISTINCT pcs_no
-                FROM production_productionrecord
-                WHERE subop_no = {STATION_BOL_END} AND result = 'OK'
-            )
+                MIN(r.created_date) AS entry_date
+            FROM production_productionrecord AS r
+            WHERE r.subop_no = {STATION_FOL_START}
+              AND UPPER(TRIM(COALESCE(r.result, ''))) = 'OK'
+              {date_clause}
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM production_productionrecord AS completed
+                  WHERE completed.pcs_no = r.pcs_no
+                    AND completed.subop_no = {STATION_BOL_END}
+                    AND UPPER(TRIM(COALESCE(completed.result, ''))) = 'OK'
+              )
             GROUP BY r.pcs_no, r.production_spec, r.lot_number
-        ) p
+        ) AS p
         ORDER BY p.entry_date DESC
         {limit_clause}
     """
@@ -402,19 +482,53 @@ def report4_defects(start_date=None, end_date=None, limit=None):
 
     manual_defects = ManualDefect.objects.all().order_by("-created_at")[:50]
     manual_data = []
+    manual_comments = {}
     for md in manual_defects:
+        manual_comments[md.pcs_no] = md.comment
         manual_data.append({
             "pcs_no": md.pcs_no,
             "production_spec": md.production_spec or "",
             "lot_number": md.lot_number or "",
             "entry_date": md.entry_date,
+            "last_ok_station": None,
+            "last_ok_at": None,
             "is_manual": True,
             "comment": md.comment,
         })
 
+    pcs_numbers = [row["pcs_no"] for row in rows] + [
+        row["pcs_no"] for row in manual_data
+    ]
+    comments = {}
+    if pcs_numbers:
+        comments = {
+            item["pcs_no"]: item["comment"]
+            for item in SNComment.objects.filter(pcs_no__in=pcs_numbers).values(
+                "pcs_no", "comment"
+            )
+        }
+    last_ok_by_pcs = _report4_last_ok_rows(pcs_numbers)
+
     for row in rows:
+        last_ok = last_ok_by_pcs.get(row["pcs_no"], {})
+        row["last_ok_station"] = last_ok.get("last_ok_station")
+        row["last_ok_at"] = last_ok.get("last_ok_at")
+        row["last_station"] = REPORT4_STATION_NAMES.get(
+            row["last_ok_station"], ""
+        )
+        row["last_station_date"] = row["last_ok_at"]
         row["is_manual"] = False
-        row["comment"] = ""
+        row["comment"] = comments.get(row["pcs_no"], "")
+
+    for row in manual_data:
+        last_ok = last_ok_by_pcs.get(row["pcs_no"], {})
+        row["last_ok_station"] = last_ok.get("last_ok_station")
+        row["last_ok_at"] = last_ok.get("last_ok_at")
+        row["last_station"] = REPORT4_STATION_NAMES.get(
+            row["last_ok_station"], ""
+        )
+        row["last_station_date"] = row["last_ok_at"]
+        row["comment"] = comments.get(row["pcs_no"], row.get("comment", ""))
 
     return rows + manual_data
 
@@ -485,9 +599,19 @@ def report6_serial_number(pcs_no):
     if not pcs_no:
         return []
 
-    from production.models import ProductionRecord
+    from production.models import ProductionRecord, SNComment
 
-    records = ProductionRecord.objects.filter(pcs_no=pcs_no).order_by("created_date", "id")
+    records = list(
+        ProductionRecord.objects.filter(pcs_no=pcs_no).order_by("created_date", "id")
+    )
+    comments = {}
+    if records:
+        comments = {
+            item["pcs_no"]: item["comment"]
+            for item in SNComment.objects.filter(
+                pcs_no__in=[record.pcs_no for record in records]
+            ).values("pcs_no", "comment")
+        }
     return [
         {
             "pcs_no": record.pcs_no,
@@ -500,6 +624,7 @@ def report6_serial_number(pcs_no):
             "created_date": record.created_date,
             "result": record.result or "",
             "test_data": record.test_data or "",
+            "comment": comments.get(record.pcs_no, ""),
         }
         for record in records
     ]

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% load widget_tweaks %}
+
+{% block title %}Редактирование комментария SN{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+  <div class="row justify-content-center">
+    <div class="col-md-7">
+      <div class="card">
+        <div class="card-header"><h5 class="mb-0">Комментарий SN: {{ pcs_no }}</h5></div>
+        <div class="card-body">
+          <form method="post">
+            {% csrf_token %}
+            {{ form.non_field_errors }}
+            <div class="mb-3">
+              <label class="form-label">Серийный номер БУ</label>
+              <input type="text" class="form-control" value="{{ pcs_no }}" readonly>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Комментарий</label>
+              {{ form.comment|add_class:"form-control" }}
+              {{ form.comment.errors }}
+            </div>
+            <button type="submit" class="btn btn-primary">Сохранить</button>
+            <a href="{% url 'reports:report4' %}" class="btn btn-outline-secondary">Отмена</a>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

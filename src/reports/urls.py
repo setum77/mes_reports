@@ -21,5 +21,6 @@ urlpatterns = [
     path("7/export/", views.Report7ExportView.as_view(), name="report7_export"),
     path("lot/<str:lot_number>/edit/", views.LotInfoUpdateView.as_view(), name="lot_edit"),
     path("defect/add/", views.ManualDefectCreateView.as_view(), name="defect_add"),
+    path("comment/<str:pcs_no>/edit/", views.SNCommentEditView.as_view(), name="sn_comment_edit"),
     path("report5/comment/", views.Report5CommentFormView.as_view(), name="report5_comment"),
 ]

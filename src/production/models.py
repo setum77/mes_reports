@@ -82,6 +82,22 @@ class ManualDefect(models.Model):
         return f"{self.pcs_no} (брак)"
 
 
+class SNComment(models.Model):
+    pcs_no = models.CharField("Серийный номер БУ", max_length=100, unique=True)
+    comment = models.TextField("Комментарий", blank=True, default="")
+    created_by = models.CharField("Кто добавил", max_length=100, blank=True)
+    created_at = models.DateTimeField("Создано", auto_now_add=True)
+    updated_at = models.DateTimeField("Изменено", auto_now=True)
+
+    class Meta:
+        verbose_name = "Комментарий SN"
+        verbose_name_plural = "Комментарии SN"
+        ordering = ["-updated_at"]
+
+    def __str__(self):
+        return self.pcs_no
+
+
 class Report5Comment(models.Model):
     """
     Комментарии для отчета 5 (повторные проходы станций).

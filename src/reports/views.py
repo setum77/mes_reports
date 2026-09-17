@@ -11,8 +11,9 @@ from django.utils import timezone as dj_timezone
 import openpyxl
 from openpyxl.chart import BarChart, Reference
 from openpyxl.styles import Alignment, Font, PatternFill
+from django import forms
 from django.contrib import messages
-from django.http import HttpResponse, HttpResponseRedirect
+from django.http import HttpResponse, HttpResponseRedirect, Http404
 from django.shortcuts import redirect, render
 from django.urls import reverse, reverse_lazy
 from django.utils.decorators import method_decorator
@@ -20,7 +21,7 @@ from django.views import View
 from django.views.generic import TemplateView, CreateView, UpdateView
 
 from accounts.views import admin_required
-from production.models import LotInfo, ManualDefect, ProductionRecord, Report5Comment
+from production.models import LotInfo, ManualDefect, ProductionRecord, Report5Comment, SNComment
 from reports.queries import (
     _aggregate_monthly,
     get_date_range,
@@ -44,10 +45,10 @@ SORTABLE_FIELDS = {
                  "bol_hours", "bol_production", "bol_speed"],
     "report3": ["report_month", "fol_hours", "fol_production", "fol_speed",
                  "bol_hours", "bol_production", "bol_speed"],
-    "report4": ["pcs_no", "production_spec", "lot_number", "entry_date", "comment"],
+    "report4": ["pcs_no", "production_spec", "lot_number", "entry_date", "last_station", "last_station_date", "comment"],
     "report5": ["pcs_no", "production_spec", "lot_number", "station", "dates", "comment"],
     "report6": ["pcs_no", "lot_number", "production_spec", "subop_no", "workstation_name",
-                "created_date", "result", "test_data"],
+                "created_date", "result", "test_data", "comment"],
     "report7": ["pcs_no", "lot_number", "production_spec", "created_date"],
 }
 
@@ -551,7 +552,7 @@ class Report4View(TemplateView):
             start_date, end_date = get_date_range(filter_type)
 
         sort_field, sort_dir = get_sort_params(request, "report4")
-        limit = 30 if not lot_filter and not start_date and not sort_field else None
+        limit = 30 if not lot_filter and not sort_field and filter_type == "30d" else None
         data = report4_defects(start_date, end_date, limit=limit)
 
         if lot_filter:
@@ -578,6 +579,62 @@ class ManualDefectCreateView(CreateView):
     def form_valid(self, form):
         form.instance.created_by = getattr(self.request.user, "username", "admin")
         return super().form_valid(form)
+
+
+class SNCommentForm(forms.ModelForm):
+    class Meta:
+        model = SNComment
+        fields = ["comment"]
+
+
+@method_decorator(admin_required, name="dispatch")
+class SNCommentEditView(View):
+    template_name = "reports/sn_comment_form.html"
+
+    def get(self, request, pcs_no):
+        if not self._pcs_exists(pcs_no):
+            raise Http404("Серийный номер не найден.")
+        comment = SNComment.objects.filter(pcs_no=pcs_no).first()
+        if comment is None:
+            comment = SNComment(pcs_no=pcs_no)
+        return render(
+            request,
+            self.template_name,
+            {"form": SNCommentForm(instance=comment), "pcs_no": pcs_no},
+        )
+
+    def post(self, request, pcs_no):
+        if not self._pcs_exists(pcs_no):
+            raise Http404("Серийный номер не найден.")
+        comment = SNComment.objects.filter(pcs_no=pcs_no).first()
+        if comment is None:
+            comment = SNComment(pcs_no=pcs_no)
+        form = SNCommentForm(request.POST, instance=comment)
+        if form.is_valid():
+            comment = form.save(commit=False)
+            comment.pcs_no = pcs_no
+            if not comment.created_by:
+                comment.created_by = request.user.get_username()
+            comment.save()
+            messages.success(request, "Комментарий сохранен.")
+            return redirect("reports:report4")
+        return render(
+            request,
+            self.template_name,
+            {"form": form, "pcs_no": pcs_no},
+            status=400,
+        )
+
+    @staticmethod
+    def _pcs_exists(pcs_no):
+        return (
+            bool(pcs_no)
+            and len(pcs_no) <= SNComment._meta.get_field("pcs_no").max_length
+            and (
+                ProductionRecord.objects.filter(pcs_no=pcs_no).exists()
+                or ManualDefect.objects.filter(pcs_no=pcs_no).exists()
+            )
+        )
 
 
 # ========================
@@ -1004,7 +1061,7 @@ class Report4ExportView(_ExcelExportBase):
             start_date, end_date = get_date_range(filter_type)
 
         sort_field, sort_dir = get_sort_params(request, "report4")
-        limit = 30 if not lot_filter and not start_date and not sort_field else None
+        limit = 30 if not lot_filter and not sort_field and filter_type == "30d" else None
         data = report4_defects(start_date, end_date, limit=limit)
         if lot_filter:
             data = [d for d in data if lot_filter.lower() in (d.get("lot_number") or "").lower()]
@@ -1015,7 +1072,11 @@ class Report4ExportView(_ExcelExportBase):
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Брак"
-        headers = ["№", "Серийный номер", "Production spec.", "Лот", "Дата поступления в производство", "Комментарий"]
+        headers = [
+            "№", "Серийный номер", "Production spec.", "Лот",
+            "Дата поступления в производство", "Последняя станция",
+            "Дата прохождения последней станции", "Комментарий",
+        ]
         for col, h in enumerate(headers, 1):
             ws.cell(1, col, h)
         for row_num, d in enumerate(data, 2):
@@ -1024,7 +1085,9 @@ class Report4ExportView(_ExcelExportBase):
             ws.cell(row_num, 3, d["production_spec"])
             ws.cell(row_num, 4, d["lot_number"] or "")
             ws.cell(row_num, 5, self._excel_value(d["entry_date"]))
-            ws.cell(row_num, 6, d.get("comment", ""))
+            ws.cell(row_num, 6, d.get("last_station", ""))
+            ws.cell(row_num, 7, self._excel_value(d.get("last_station_date")))
+            ws.cell(row_num, 8, d.get("comment", ""))
 
         return self._make_response(wb, "report4_defects.xlsx")
 
@@ -1090,7 +1153,7 @@ class Report6ExportView(_ExcelExportBase):
         ws.title = "Отчет по SN"
         headers = [
             "PCSNo", "Lot no.", "Production spec.", "Subop no",
-            "WorkstationName", "CREATEDATE", "result", "testData",
+            "WorkstationName", "CREATEDATE", "result", "testData", "Комментарий",
         ]
         for col, header in enumerate(headers, 1):
             ws.cell(1, col, header)
@@ -1103,6 +1166,7 @@ class Report6ExportView(_ExcelExportBase):
             ws.cell(row_num, 6, self._excel_value(d["created_date"]))
             ws.cell(row_num, 7, d["result"])
             ws.cell(row_num, 8, d["test_data"])
+            ws.cell(row_num, 9, d.get("comment", ""))
 
         return self._make_response(wb, f"report6_{pcs_no}.xlsx")
 
