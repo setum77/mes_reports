@@ -2,7 +2,7 @@
 Основные запросы для отчетов.
 Все функции возвращают списки словарей, готовые для шаблонов.
 """
-from datetime import timedelta
+from datetime import date, timedelta
 from django.db import connection
 
 STATION_FOL_START = 10
@@ -297,94 +297,62 @@ def report2_line_productivity(start_date, end_date):
     return rows
 
 
+def _aggregate_monthly(daily_rows, year):
+    """
+    Агрегирует дневные строки отчёта №2 в 12 месячных строк.
+
+    Для каждого месяца суммируется fol_hours, fol_production, bol_hours,
+    bol_production. Месячная скорость — среднее дневных скоростей только по
+    активным дням соответствующей линии (как в _report2_summary).
+    Пустые месяцы остаются с нулевыми значениями, сохраняется хронология.
+    """
+    months = []
+    for month in range(1, 13):
+        month_rows = [
+            row for row in daily_rows
+            if row.get("report_date") and row["report_date"].year == year
+            and row["report_date"].month == month
+        ]
+
+        fol_hours = round(sum((row.get("fol_hours") or 0) for row in month_rows), 2)
+        fol_production = sum((row.get("fol_production") or 0) for row in month_rows)
+        bol_hours = round(sum((row.get("bol_hours") or 0) for row in month_rows), 2)
+        bol_production = sum((row.get("bol_production") or 0) for row in month_rows)
+
+        fol_speeds = [
+            row.get("fol_speed", 0)
+            for row in month_rows
+            if (row.get("fol_hours") or 0) > 0
+        ]
+        bol_speeds = [
+            row.get("bol_speed", 0)
+            for row in month_rows
+            if (row.get("bol_hours") or 0) > 0
+        ]
+        fol_speed = round(sum(fol_speeds) / len(fol_speeds), 2) if fol_speeds else 0
+        bol_speed = round(sum(bol_speeds) / len(bol_speeds), 2) if bol_speeds else 0
+
+        months.append({
+            "report_month": date(year, month, 1),
+            "fol_hours": fol_hours,
+            "fol_production": fol_production,
+            "fol_speed": fol_speed,
+            "bol_hours": bol_hours,
+            "bol_production": bol_production,
+            "bol_speed": bol_speed,
+        })
+    return months
+
+
 def report3_monthly_productivity(start_date, end_date):
     """
     Отчет 3: Сводный по месяцам.
-    Та же логика что и Report 2, но группировка по месяцам.
+
+    Строится на том же дневном наборе, что и отчёт №2
+    (report2_line_productivity), с последующей агрегацией по месяцам.
     """
-    sql = f"""
-        WITH month_series AS (
-            SELECT generate_series(
-                DATE(DATE_TRUNC('month', %s::date)),
-                DATE_TRUNC('month', %s::date)::date,
-                '1 month'::interval
-            )::date as dt
-        ),
-        fol_last_ok AS (
-            SELECT pcs_no, MAX(created_date) as dt
-            FROM production_productionrecord
-            WHERE subop_no = {STATION_FOL_END} AND result = 'OK'
-            AND created_date::date >= %s AND created_date::date <= %s
-            GROUP BY pcs_no
-        ),
-        bol_last_ok AS (
-            SELECT pcs_no, MAX(created_date) as dt
-            FROM production_productionrecord
-            WHERE subop_no = {STATION_BOL_END} AND result = 'OK'
-            AND created_date::date >= %s AND created_date::date <= %s
-            GROUP BY pcs_no
-        ),
-        fol_bounds AS (
-            SELECT
-                DATE_TRUNC('month', created_date)::date as dt,
-                MIN(created_date) as first_ts,
-                MAX(created_date) as last_ts
-            FROM production_productionrecord
-            WHERE subop_no IN ({STATION_FOL_START}, {STATION_FOL_END})
-            AND created_date::date >= %s AND created_date::date <= %s
-            GROUP BY DATE_TRUNC('month', created_date)
-        ),
-        bol_bounds AS (
-            SELECT
-                DATE_TRUNC('month', created_date)::date as dt,
-                MIN(created_date) as first_ts,
-                MAX(created_date) as last_ts
-            FROM production_productionrecord
-            WHERE subop_no IN ({STATION_BOL_START}, {STATION_BOL_END})
-            AND created_date::date >= %s AND created_date::date <= %s
-            GROUP BY DATE_TRUNC('month', created_date)
-        )
-        SELECT
-            m.dt as report_month,
-            fb.first_ts as fol_start,
-            fb.last_ts as fol_end,
-            (EXTRACT(EPOCH FROM (fb.last_ts - fb.first_ts)) / 3600.0) as fol_hours,
-            (
-                SELECT COUNT(DISTINCT fk.pcs_no)
-                FROM fol_last_ok fk
-                WHERE DATE_TRUNC('month', fk.dt)::date = m.dt
-            ) as fol_production,
-            bb.first_ts as bol_start,
-            bb.last_ts as bol_end,
-            (EXTRACT(EPOCH FROM (bb.last_ts - bb.first_ts)) / 3600.0) as bol_hours,
-            (
-                SELECT COUNT(DISTINCT bk.pcs_no)
-                FROM bol_last_ok bk
-                WHERE DATE_TRUNC('month', bk.dt)::date = m.dt
-            ) as bol_production
-        FROM month_series m
-        LEFT JOIN fol_bounds fb ON fb.dt = m.dt
-        LEFT JOIN bol_bounds bb ON bb.dt = m.dt
-        ORDER BY m.dt
-    """
-
-    params = [start_date, end_date] * 5
-    with connection.cursor() as cursor:
-        cursor.execute(sql, params)
-        rows = dictfetchall(cursor)
-
-    for r in rows:
-        fol_hours = r["fol_hours"] or 0
-        r["fol_hours"] = round(fol_hours, 2)
-        r["fol_production"] = r["fol_production"] or 0
-        r["fol_speed"] = round(r["fol_production"] / fol_hours, 2) if fol_hours > 0 else 0
-
-        bol_hours = r["bol_hours"] or 0
-        r["bol_hours"] = round(bol_hours, 2)
-        r["bol_production"] = r["bol_production"] or 0
-        r["bol_speed"] = round(r["bol_production"] / bol_hours, 2) if bol_hours > 0 else 0
-
-    return rows
+    daily_rows = report2_line_productivity(start_date, end_date)
+    return _aggregate_monthly(daily_rows, start_date.year)
 
 
 def report4_defects(start_date=None, end_date=None, limit=None):

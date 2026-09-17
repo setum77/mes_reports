@@ -22,10 +22,10 @@ from django.views.generic import TemplateView, CreateView, UpdateView
 from accounts.views import admin_required
 from production.models import LotInfo, ManualDefect, ProductionRecord, Report5Comment
 from reports.queries import (
+    _aggregate_monthly,
     get_date_range,
     report1_orders,
     report2_line_productivity,
-    report3_monthly_productivity,
     report4_defects,
     report5_repeated_passes,
     report6_serial_number,
@@ -445,6 +445,41 @@ class Report2View(TemplateView):
         return response
 
 
+REPORT3_PERIOD_TYPES = {"year"}
+
+
+def _report3_period(request):
+    """Обработчик периода отчёта №3."""
+    today = dj_timezone.localdate()
+    filter_type = request.GET.get("filter", "year")
+    if filter_type not in REPORT3_PERIOD_TYPES:
+        filter_type = "year"
+
+    year_value = today.year
+    error = ""
+    year_param = request.GET.get("year")
+    if year_param not in (None, ""):
+        try:
+            parsed_year = int(year_param)
+            if 2000 <= parsed_year <= 2100:
+                year_value = parsed_year
+            else:
+                error = "Выбран некорректный год."
+        except (TypeError, ValueError):
+            error = "Выбран некорректный год."
+
+    start_date = datetime(year_value, 1, 1).date()
+    end_date = datetime(year_value, 12, 31).date()
+
+    return {
+        "filter_type": filter_type,
+        "year_value": year_value,
+        "start_date": start_date,
+        "end_date": end_date,
+        "error": error,
+    }
+
+
 # ========================
 # Отчет 3: Сводный по месяцам
 # ========================
@@ -453,23 +488,42 @@ class Report3View(TemplateView):
     template_name = "reports/report3.html"
 
     def get(self, request, *args, **kwargs):
-        year = request.GET.get("year")
-        if year:
-            start_date = datetime.strptime(f"{year}-01-01", "%Y-%m-%d").date()
-            end_date = datetime.strptime(f"{year}-12-31", "%Y-%m-%d").date()
-        else:
-            start_date, end_date = get_date_range("year")
-        data = report3_monthly_productivity(start_date, end_date)
+        period = _report3_period(request)
+        daily = report2_line_productivity(period["start_date"], period["end_date"])
+        data = _aggregate_monthly(daily, period["year_value"])
 
         sort_field, sort_dir = get_sort_params(request, "report3")
         if sort_field:
             data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report3"])
 
-        return self.render_to_response(self.get_context_data(
-            data=data, start_date=start_date, end_date=end_date, year=year or start_date.year,
-            years=range(2024, 2027),
-            sort_field=sort_field, sort_dir=sort_dir,
+        filtered_daily = [row for row in daily if row.get("has_data")]
+        summary = _report2_summary(filtered_daily, period["start_date"], period["end_date"])
+        table_summary = summary
+
+        chart_data = {
+            "months": [row["report_month"].strftime("%Y-%m") for row in data],
+            "fol_hours": [float(row.get("fol_hours") or 0) for row in data],
+            "bol_hours": [float(row.get("bol_hours") or 0) for row in data],
+            "fol_production": [float(row.get("fol_production") or 0) for row in data],
+            "bol_production": [float(row.get("bol_production") or 0) for row in data],
+            "fol_speed": [float(row.get("fol_speed") or 0) for row in data],
+            "bol_speed": [float(row.get("bol_speed") or 0) for row in data],
+        }
+
+        today = dj_timezone.localdate()
+        response = self.render_to_response(self.get_context_data(
+            data=data,
+            summary=summary,
+            table_summary=table_summary,
+            chart_data=json.dumps(chart_data),
+            months=range(1, 13),
+            years=range(2024, today.year + 2),
+            sort_field=sort_field,
+            sort_dir=sort_dir,
+            **period,
         ))
+        response["Cache-Control"] = "no-store"
+        return response
 
 
 # ========================
@@ -723,8 +777,8 @@ class Report2ExportView(_ExcelExportBase):
         cell.alignment = Alignment(horizontal="center")
 
     @staticmethod
-    def _write_report2_summary(ws, period, summary):
-        ws["A1"] = "Отчёт №2: Производительность сборочной линии"
+    def _write_report2_summary(ws, period, summary, title="Отчёт №2: Производительность сборочной линии"):
+        ws["A1"] = title
         ws["A1"].font = Font(bold=True, size=14, color="FFFFFF")
         ws["A1"].fill = PatternFill("solid", fgColor="1F4E78")
         ws["A1"].alignment = Alignment(horizontal="center")
@@ -858,36 +912,77 @@ class Report2ExportView(_ExcelExportBase):
         return self._make_response(wb, "report2_line.xlsx")
 
 
-class Report3ExportView(_ExcelExportBase):
+class Report3ExportView(Report2ExportView):
+    """Экспорт отчёта №3: ежемесячная сводка, сводка и диаграммы."""
+
     def get(self, request):
-        year = request.GET.get("year")
-        if year:
-            start_date = datetime.strptime(f"{year}-01-01", "%Y-%m-%d").date()
-            end_date = datetime.strptime(f"{year}-12-31", "%Y-%m-%d").date()
-        else:
-            start_date, end_date = get_date_range("year")
-        data = report3_monthly_productivity(start_date, end_date)
+        period = _report3_period(request)
+        daily = report2_line_productivity(period["start_date"], period["end_date"])
+        data = _aggregate_monthly(daily, period["year_value"])
 
         sort_field, sort_dir = get_sort_params(request, "report3")
         if sort_field:
             data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report3"])
 
+        filtered_daily = [row for row in daily if row.get("has_data")]
+        summary = _report2_summary(filtered_daily, period["start_date"], period["end_date"])
+
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Сводный месяцы"
-        headers = ["Месяц", "FOL hours", "FOL production", "FOL speed", "BOL hours", "BOL production", "BOL speed"]
-        for col, h in enumerate(headers, 1):
-            ws.cell(1, col, h)
-        for row_num, d in enumerate(data, 2):
-            ws.cell(row_num, 1, d["report_month"].strftime("%Y-%m") if hasattr(d["report_month"], "strftime") else str(d["report_month"]))
-            ws.cell(row_num, 2, d["fol_hours"])
-            ws.cell(row_num, 3, d["fol_production"])
-            ws.cell(row_num, 4, d["fol_speed"])
-            ws.cell(row_num, 5, d["bol_hours"])
-            ws.cell(row_num, 6, d["bol_production"])
-            ws.cell(row_num, 7, d["bol_speed"])
+        headers = ["Месяц", "FOL hours", "FOL production", "FOL speed",
+                   "BOL hours", "BOL production", "BOL speed"]
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(1, col, header)
+            fill_color = self.header_fill
+            if 2 <= col <= 4:
+                fill_color = self.fol_color
+            elif col >= 5:
+                fill_color = self.bol_color
+            self._style_report2_header(cell, fill_color)
 
-        return self._make_response(wb, "report3_monthly.xlsx")
+        for row_num, row in enumerate(data, 2):
+            ws.cell(row_num, 1, row["report_month"].strftime("%Y-%m"))
+            ws.cell(row_num, 2, row["fol_hours"])
+            ws.cell(row_num, 3, row["fol_production"])
+            ws.cell(row_num, 4, row["fol_speed"])
+            ws.cell(row_num, 5, row["bol_hours"])
+            ws.cell(row_num, 6, row["bol_production"])
+            ws.cell(row_num, 7, row["bol_speed"])
+            for col in range(2, 5):
+                ws.cell(row_num, col).fill = PatternFill("solid", fgColor=self.fol_fill)
+            for col in range(5, 8):
+                ws.cell(row_num, col).fill = PatternFill("solid", fgColor=self.bol_fill)
+            for col in range(2, 8):
+                ws.cell(row_num, col).number_format = "0.00"
+
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = f"A1:G{ws.max_row}"
+        ws.column_dimensions["A"].width = 14
+        ws.column_dimensions["B"].width = 14
+        ws.column_dimensions["C"].width = 18
+        ws.column_dimensions["D"].width = 14
+        ws.column_dimensions["E"].width = 14
+        ws.column_dimensions["F"].width = 18
+        ws.column_dimensions["G"].width = 14
+
+        summary_ws = wb.create_sheet("Сводка")
+        self._write_report2_summary(
+            summary_ws,
+            period,
+            summary,
+            title="Отчёт №3: Сводный по месяцам",
+        )
+
+        charts_ws = wb.create_sheet("Диаграммы")
+        charts_ws.sheet_view.showGridLines = False
+        self._add_report2_chart(charts_ws, ws, "Время работы, ч", 2, 5, "A3")
+        self._add_report2_chart(charts_ws, ws, "Выпуск продукции, шт", 3, 6, "J3")
+        self._add_report2_chart(charts_ws, ws, "Скорость выпуска, шт/ч", 4, 7, "A20")
+
+        response = self._make_response(wb, "report3_monthly.xlsx")
+        response["Cache-Control"] = "no-store"
+        return response
 
 
 class Report4ExportView(_ExcelExportBase):
