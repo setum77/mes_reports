@@ -27,9 +27,11 @@ dist/
 
 # IDE
 .vscode/
+.kilo/
 .idea/
 *.swp
 *.swo
+.
 *~
 
 # OS
