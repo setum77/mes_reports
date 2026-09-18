@@ -36,7 +36,7 @@
 - Preserve Excel import deduplication using `ignore_conflicts=True`.
 - Required Excel columns:
   `Lot no.`, `Subop no`, `PCSNo`, `CREATEDATE`, `result`.
-- Preserve `Cache-Control: no-store` behavior for reports No. 2 and No. 3.
+- Preserve `Cache-Control: no-store` for HTML responses of reports No. 2 and No. 3, and for the No. 3 Excel export.
 - Database-backed tests require PostgreSQL.
 
 ## Validation
