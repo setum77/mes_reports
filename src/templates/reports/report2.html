@@ -23,13 +23,14 @@
 {% endif %}
 
 <div class="card p-3 mb-4">
-    <form method="get" class="row g-3 align-items-end">
+    <form method="get" class="row g-3 align-items-end" autocomplete="off">
         <div class="col-auto">
             <label class="form-label">Период</label>
             <select name="filter" class="form-select form-select-sm" onchange="togglePeriodFields(this.value)">
                 <option value="year" {% if filter_type == 'year' %}selected{% endif %}>Год</option>
                 <option value="month" {% if filter_type == 'month' %}selected{% endif %}>Месяц</option>
                 <option value="period" {% if filter_type == 'period' %}selected{% endif %}>Произвольный период</option>
+                <option value="lot" {% if filter_type == 'lot' %}selected{% endif %}>По лоту</option>
             </select>
         </div>
         <div class="col-auto" id="year-field" style="display:{% if filter_type == 'year' or filter_type == 'month' %}block{% else %}none{% endif %};">
@@ -56,13 +57,21 @@
             <label for="end" class="form-label">Дата по</label>
             <input id="end" name="end" type="date" class="form-control form-control-sm" value="{{ end_date|date:'Y-m-d' }}">
         </div>
+        <div class="col-auto" id="lot-field" style="display:{% if filter_type == 'lot' %}block{% else %}none{% endif %};">
+            <label for="lot" class="form-label">Номер лота</label>
+            <input id="lot" type="text" name="lot" class="form-control form-control-sm" placeholder="MO608131-001" value="{{ lot_value }}">
+        </div>
         <div class="col-auto">
             <button type="submit" class="btn btn-primary btn-sm">Обновить</button>
         </div>
     </form>
 </div>
 
+{% if filter_type == 'lot' %}
+<p class="text-muted small mb-3">Фильтр: По лоту ({{ lot_value|default:'не указан' }})</p>
+{% else %}
 <p class="text-muted small mb-3">Период: {{ start_date|date:"Y-m-d" }} — {{ end_date|date:"Y-m-d" }}</p>
+{% endif %}
 
 <div class="card p-3 mb-4">
     <div class="row text-center">
@@ -152,15 +161,32 @@
 {% block extra_js %}
 <script>
 function togglePeriodFields(value) {
-    const fields = {
-        year: ['year-field'],
-        month: ['month-field', 'year-field'],
-        period: ['period-field', 'end-field']
+    // Фильтры, для которых отображается каждое поле. Год нужен и для «Год», и для «Месяц»,
+    // поэтому поле не просто скрывается «все, кроме своего» — иначе оно гаснется другим
+    // правилом. Сравнение по набору фильтров избавляет от двойного переключателя.
+    // Скрытые поля дополнительно выключаются через disabled, чтобы не попадали в submit
+    // (иначе Chrome восстанавливает старые значения и URL содержит параметры предыдущего фильтра).
+    var fieldFilters = {
+        'year-field': ['year', 'month'],
+        'month-field': ['month'],
+        'period-field': ['period'],
+        'end-field': ['period'],
+        'lot-field': ['lot']
     };
-    Object.entries(fields).forEach(function(entry) {
-        entry[1].forEach(function(id) {
-            document.getElementById(id).style.display = value === entry[0] ? 'block' : 'none';
-        });
+    Object.entries(fieldFilters).forEach(function(entry) {
+        var id = entry[0];
+        var filters = entry[1];
+        var el = document.getElementById(id);
+        var control = el ? el.querySelector('select, input') : null;
+        if (el) {
+            if (filters.indexOf(value) !== -1) {
+                el.style.display = 'block';
+                if (control) control.disabled = false;
+            } else {
+                el.style.display = 'none';
+                if (control) control.disabled = true;
+            }
+        }
     });
 }
 document.addEventListener('DOMContentLoaded', function() {

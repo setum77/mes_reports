@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "08. Отчет по станциям.md",
+                "file": "06. Отчет по SN.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "08. Отчет по станциям"
+              "title": "06. Отчет по SN"
             }
           }
         ]
@@ -190,15 +190,15 @@
   },
   "active": "9ca24c5bfdaff539",
   "lastOpenFiles": [
-    "mes_repots_Sсheme.canvas",
     "08. Отчет по станциям.md",
+    "06. Отчет по SN.md",
+    "mes_repots_Sсheme.canvas",
     "Добро пожаловать.md",
     "mes_reports Laguna S 2.1 free.md",
     "MES reports Project.md",
     "08. по станциям.xlsx",
     "08. по станциям.csv",
     "07. Выпуск за период.md",
-    "06. Отчет по SN.md",
     "05. Повторные проходы станций.md",
     "04. Отчет по браку.md",
     "03. Сводный отчет по месяцам.md",

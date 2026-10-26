@@ -207,12 +207,38 @@ def report1_orders(start_date=None, end_date=None):
     return results
 
 
-def report2_line_productivity(start_date, end_date):
+def report2_line_productivity(start_date, end_date, lot_number=None):
     """
     Отчет 2: Производительность линии по дням.
     FOL: время [первый 010 → последний 050] на дату, уникальные PCSNo на выходе 050 со статусом OK (последний раз)
     BOL: время [первый 060 → последний 130] на дату, уникальные PCSNo на выходе 130 со статусом OK (последний раз)
+
+    lot_number: если задан, ограничивает данные по лоту (для фильтра «По лоту»).
+    При фильтре по лоту без диапазона дат диапазон вычисляется из записей лота.
     """
+    # При фильтре «По лоту» без диапазона дат вычисляем диапазон из записей лота
+    # (нужен для generate_series).
+    if lot_number and (not start_date or not end_date):
+        range_sql = """
+            SELECT MIN(DATE(created_date)), MAX(DATE(created_date))
+            FROM production_productionrecord
+            WHERE lot_number = %s
+        """
+        with connection.cursor() as cursor:
+            cursor.execute(range_sql, [lot_number])
+            row = cursor.fetchone()
+        if row and row[0] and row[1]:
+            start_date, end_date = row[0], row[1]
+        else:
+            return []
+
+    # Без диапазона дат и лота нечего отображать.
+    if not start_date or not end_date:
+        return []
+
+    lot_clause = "AND lot_number = %s" if lot_number else ""
+    lot_param = [lot_number] if lot_number else []
+
     sql = f"""
         WITH date_series AS (
             SELECT generate_series(%s::date, %s::date, '1 day'::interval)::date as dt
@@ -222,6 +248,7 @@ def report2_line_productivity(start_date, end_date):
             SELECT pcs_no, MAX(created_date) as dt
             FROM production_productionrecord
             WHERE subop_no = {STATION_FOL_END} AND result = 'OK'
+            {lot_clause}
             GROUP BY pcs_no
         ),
         -- Last OK exit at station 130 per PCSNo
@@ -229,6 +256,7 @@ def report2_line_productivity(start_date, end_date):
             SELECT pcs_no, MAX(created_date) as dt
             FROM production_productionrecord
             WHERE subop_no = {STATION_BOL_END} AND result = 'OK'
+            {lot_clause}
             GROUP BY pcs_no
         ),
         -- FOL hourly bounds per date
@@ -239,6 +267,7 @@ def report2_line_productivity(start_date, end_date):
                 MAX(created_date) as last_ts
             FROM production_productionrecord
             WHERE subop_no IN ({STATION_FOL_START}, {STATION_FOL_END})
+            {lot_clause}
             AND created_date::date >= %s AND created_date::date <= %s
             GROUP BY DATE(created_date)
         ),
@@ -250,6 +279,7 @@ def report2_line_productivity(start_date, end_date):
                 MAX(created_date) as last_ts
             FROM production_productionrecord
             WHERE subop_no IN ({STATION_BOL_START}, {STATION_BOL_END})
+            {lot_clause}
             AND created_date::date >= %s AND created_date::date <= %s
             GROUP BY DATE(created_date)
         )
@@ -277,8 +307,14 @@ def report2_line_productivity(start_date, end_date):
         ORDER BY d.dt
     """
 
+    params = [start_date, end_date]
+    params += lot_param            # fol_last_ok
+    params += lot_param            # bol_last_ok
+    params += lot_param + [start_date, end_date]  # fol_bounds: lot, start, end
+    params += lot_param + [start_date, end_date]  # bol_bounds: lot, start, end
+
     with connection.cursor() as cursor:
-        cursor.execute(sql, [start_date, end_date, start_date, end_date, start_date, end_date])
+        cursor.execute(sql, params)
         rows = dictfetchall(cursor)
 
     for r in rows:
@@ -663,3 +699,199 @@ def report7_station130_output(start_date, end_date):
     with connection.cursor() as cursor:
         cursor.execute(sql, [STATION_BOL_END, start_date, end_date])
         return dictfetchall(cursor)
+
+
+# ========================
+# Отчет 8: По станциям
+# ========================
+
+# Станции с колонками Ok (уникальные SN) — промежуточные станции FOL/BOL.
+REPORT8_UNIQUE_STATIONS = {10, 30, 50, 60, 70}
+
+# Станции-тестеры с колонками Ok/NG/%/NG SN.
+REPORT8_TEST_STATIONS = {20, 80, 90, 100, 110, 120, 130}
+
+# Читаемые подписи станций для графика и сводки (только станции с %).
+REPORT8_CHART_STATIONS = [
+    (20, "FCT1"),
+    (80, "FCT2"),
+    (90, "Прошивка"),
+    (100, "Проверка прошивки"),
+    (110, "Герметичность"),
+    (120, "PIN"),
+    (130, "Этикетка"),
+]
+
+# Цвета линий диаграммы «Средний % NG по дням» — по порядку станций REPORT8_CHART_STATIONS.
+# Каждый NG-тип своего цвета (HEX) — используется в Chart.js и в Excel-экспорте.
+REPORT8_CHART_COLORS = [
+    "#4361EE",  # FCT1 — синий
+    "#F77F00",  # FCT2 — оранжевый
+    "#06A786",  # Прошивка — бирюзовый
+    "#8F3FFC",  # Проверка прошивки — фиолетовый
+    "#DC3545",  # Герметичность — красный
+    "#17A2B8",  # PIN — циан
+    "#D63384",  # Этикетка — розовый
+]
+
+# Подписи столбцов для таблицы отчёта 8.
+# (key, station_no, kind, row1_title, row2_title, css_group)
+# kind: date | unique_ok | all_ok | all_ng | pct | ng_sns | diff_fol | diff_bol
+REPORT8_COLUMNS = [
+    ("report_date", None, "date", "Дата", "", "date"),
+    ("station_010_ok", 10, "unique_ok", "010 Подача PCB-плат", "Ok", "process"),
+    ("station_020_ok", 20, "all_ok", "020 FCT1", "Ok", "test"),
+    ("station_020_ng", 20, "all_ng", "020 FCT1", "NG", "test"),
+    ("station_020_pct", 20, "pct", "020 FCT1", "%", "test"),
+    ("station_020_ng_sns", 20, "ng_sns", "020 FCT1", "NG SN", "test"),
+    ("station_030_ok", 30, "unique_ok", "030 Плазма", "Ok", "process"),
+    ("station_050_ok", 50, "unique_ok", "050 Сборка корпуса", "Ok", "process"),
+    ("fol_diff", None, "diff_fol", "Разница FOL", "Разница", "diff"),
+    ("station_060_ok", 60, "unique_ok", "060 Стабилизация", "Ok", "process"),
+    ("station_070_ok", 70, "unique_ok", "070 Burn-in", "Ok", "process"),
+    ("station_080_ok", 80, "all_ok", "080 FCT2", "Ok", "test"),
+    ("station_080_ng", 80, "all_ng", "080 FCT2", "NG", "test"),
+    ("station_080_pct", 80, "pct", "080 FCT2", "%", "test"),
+    ("station_080_ng_sns", 80, "ng_sns", "080 FCT2", "NG SN", "test"),
+    ("station_090_ok", 90, "all_ok", "090 Прошивка", "Ok", "test"),
+    ("station_090_ng", 90, "all_ng", "090 Прошивка", "NG", "test"),
+    ("station_090_pct", 90, "pct", "090 Прошивка", "%", "test"),
+    ("station_090_ng_sns", 90, "ng_sns", "090 Прошивка", "NG SN", "test"),
+    ("station_100_ok", 100, "all_ok", "100 Проверка прошивки", "Ok", "test"),
+    ("station_100_ng", 100, "all_ng", "100 Проверка прошивки", "NG", "test"),
+    ("station_100_pct", 100, "pct", "100 Проверка прошивки", "%", "test"),
+    ("station_100_ng_sns", 100, "ng_sns", "100 Проверка прошивки", "NG SN", "test"),
+    ("station_110_ok", 110, "all_ok", "110 Проверка герметичности", "Ok", "test"),
+    ("station_110_ng", 110, "all_ng", "110 Проверка герметичности", "NG", "test"),
+    ("station_110_pct", 110, "pct", "110 Проверка герметичности", "%", "test"),
+    ("station_110_ng_sns", 110, "ng_sns", "110 Проверка герметичности", "NG SN", "test"),
+    ("station_120_ok", 120, "all_ok", "120 PIN-тест", "Ok", "test"),
+    ("station_120_ng", 120, "all_ng", "120 PIN-тест", "NG", "test"),
+    ("station_120_pct", 120, "pct", "120 PIN-тест", "%", "test"),
+    ("station_120_ng_sns", 120, "ng_sns", "120 PIN-тест", "NG SN", "test"),
+    ("station_130_ok", 130, "all_ok", "130 Наклейка этикетки", "Ok", "test"),
+    ("station_130_ng", 130, "all_ng", "130 Наклейка этикетки", "NG", "test"),
+    ("station_130_pct", 130, "pct", "130 Наклейка этикетки", "%", "test"),
+    ("station_130_ng_sns", 130, "ng_sns", "130 Наклейка этикетки", "NG SN", "test"),
+    ("bol_diff", None, "diff_bol", "Разница BOL", "Разница", "diff"),
+]
+
+# Заголовки для строки 1 таблицы (с colspan для сгруппированных станций).
+REPORT8_HEADER_GROUPS = [
+    {"title": "Дата", "span": 1},
+    {"title": "010 Подача PCB-плат", "span": 1},
+     {"title": "020 FCT1", "span": 4},
+    {"title": "030 Плазма", "span": 1},
+    {"title": "050 Сборка корпуса", "span": 1},
+    {"title": "Разница FOL", "span": 1},
+    {"title": "060 Стабилизация", "span": 1},
+    {"title": "070 Burn-in", "span": 1},
+     {"title": "080 FCT2", "span": 4},
+     {"title": "090 Прошивка", "span": 4},
+     {"title": "100 Проверка прошивки", "span": 4},
+     {"title": "110 Проверка герметичности", "span": 4},
+     {"title": "120 PIN-тест", "span": 4},
+     {"title": "130 Наклейка этикетки", "span": 4},
+    {"title": "Разница BOL", "span": 1},
+]
+
+# Ключи станций, используемых в сводке и графике (только станции с %).
+REPORT8_CHART_KEYS = [
+    "station_020_pct", "station_080_pct", "station_090_pct",
+    "station_100_pct", "station_110_pct", "station_120_pct", "station_130_pct",
+]
+
+
+def report8_table_columns():
+    """REPORT8_COLUMNS с вычисленным флагом group_start (индекс 6).
+
+    group_start = True для первой колонки каждого станционного блока (т.е. когда
+    station_no меняется по сравнению с предыдущей колонкой). Используется шаблоном
+    отчёта 8 для вертикальных разделителей между блоками станций.
+    """
+    cols = []
+    prev_station = object()
+    for key, station_no, kind, r1, r2, css in REPORT8_COLUMNS:
+        cols.append([key, station_no, kind, r1, r2, css, station_no != prev_station])
+        prev_station = station_no
+    return cols
+
+
+
+def report8_stations(start_date, end_date, lot_number=None):
+    """
+    Отчет 8: По станциям (качество прохождения станций по дням).
+
+    Для каждой даты возвращает одну строку со столбцами по каждой станции:
+    уникальное количество OK, все OK, все NG, % NG от OK и список SN с NG.
+    Включаются только даты, где есть хотя бы одна запись.
+    """
+    stations = [10, 20, 30, 50, 60, 70, 80, 90, 100, 110, 120, 130]
+    stations_in = ", ".join(str(s) for s in stations)
+
+    sql = f"""
+        SELECT
+            DATE(created_date) AS report_date,
+            subop_no AS station_no,
+            COUNT(DISTINCT pcs_no) FILTER (WHERE result = 'OK') AS unique_ok,
+            COUNT(*) FILTER (WHERE result = 'OK') AS ok_count,
+            COUNT(*) FILTER (WHERE result = 'NG') AS ng_count,
+            STRING_AGG(DISTINCT pcs_no, ', ' ORDER BY pcs_no) FILTER (WHERE result = 'NG') AS ng_sns
+        FROM production_productionrecord
+        WHERE 1=1
+          {("AND created_date::date >= %s AND created_date::date <= %s" if start_date and end_date else "")}
+          {("AND lot_number = %s" if lot_number else "")}
+          AND subop_no IN ({stations_in})
+        GROUP BY DATE(created_date), subop_no
+        ORDER BY report_date, subop_no
+    """
+    if start_date and end_date:
+        params = [start_date, end_date]
+    else:
+        params = []
+    if lot_number:
+        params = params + [lot_number]
+
+    with connection.cursor() as cursor:
+        cursor.execute(sql, params)
+        raw = dictfetchall(cursor)
+
+    # Pivot rows into one dict per date.
+    by_date = {}
+    for r in raw:
+        d = r["report_date"]
+        if d not in by_date:
+            by_date[d] = {"report_date": d}
+        station = r["station_no"]
+        by_date[d][f"station_{station}_unique_ok"] = r["unique_ok"] or 0
+        by_date[d][f"station_{station}_ok_count"] = r["ok_count"] or 0
+        by_date[d][f"station_{station}_ng_count"] = r["ng_count"] or 0
+        by_date[d][f"station_{station}_ng_sns"] = (
+            [s for s in (r["ng_sns"] or "").split(",")] if r["ng_sns"] else []
+        )
+
+    results = []
+    for d in sorted(by_date):
+        row = by_date[d]
+        for key, station_no, kind, _r1, _r2, _css in REPORT8_COLUMNS:
+            if kind == "date":
+                continue
+            if kind == "unique_ok":
+                row[key] = row.get(f"station_{station_no}_unique_ok", 0)
+            elif kind == "all_ok":
+                row[key] = row.get(f"station_{station_no}_ok_count", 0)
+            elif kind == "all_ng":
+                row[key] = row.get(f"station_{station_no}_ng_count", 0)
+            elif kind == "pct":
+                ok = row.get(f"station_{station_no}_ok_count", 0)
+                ng = row.get(f"station_{station_no}_ng_count", 0)
+                row[key] = round(ng / ok * 100, 2) if ok else 0.0 if ng == 0 else 100.0
+            elif kind == "ng_sns":
+                row[key] = row.get(f"station_{station_no}_ng_sns", [])
+            elif kind == "diff_fol":
+                row[key] = row.get("station_50_unique_ok", 0) - row.get("station_10_unique_ok", 0)
+            elif kind == "diff_bol":
+                row[key] = row.get("station_130_unique_ok", 0) - row.get("station_60_unique_ok", 0)
+        results.append(row)
+
+    return results

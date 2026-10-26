@@ -98,8 +98,9 @@ class MESAdminSite(AdminSite):
             ("reports:report4", "Отчёт 4: Брак"),
             ("reports:report5", "Отчёт 5: Повторные проходы"),
             ("reports:report6", "Отчёт 6: Серийный номер"),
-            ("reports:report7", "Отчёт 7: Выпуск"),
-        )
+             ("reports:report7", "Отчёт 7: Выпуск"),
+             ("reports:report8", "Отчёт 8: По станциям"),
+         )
         return [
             {"url": reverse(url_name), "label": label}
             for url_name, label in report_names

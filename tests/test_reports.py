@@ -29,6 +29,7 @@ from reports.queries import (
     report5_repeated_passes,
     report6_serial_number,
     report7_station130_output,
+    report8_stations,
     translate_workstation_name,
 )
 from reports.views import (
@@ -37,9 +38,14 @@ from reports.views import (
     _report2_summary,
     _report7_period,
     _report7_summary,
+    _report8_period,
+    _report8_summary,
     apply_sort,
     get_sort_params,
     SORTABLE_FIELDS,
+    REPORT8_COLUMNS,
+    REPORT8_CHART_KEYS,
+    REPORT8_CHART_STATIONS,
 )
 
 
@@ -102,6 +108,38 @@ def test_report2_line_productivity():
     assert len(data) == 1
     assert data[0]["fol_hours"] == 2.0
     assert data[0]["fol_production"] == 1
+    assert data[0]["has_data"] is True
+
+
+@pytest.mark.django_db
+def test_report2_line_productivity_lot():
+    """Фильтр по лоту: учитываются только записи указанного лота."""
+    dt_start = timezone.make_aware(datetime(2026, 8, 13, 10, 0, 0))
+    dt_end = timezone.make_aware(datetime(2026, 8, 13, 12, 0, 0))
+
+    # Лот LOT-A: PCS1 прошёл станции 010 и 050
+    ProductionRecord.objects.create(
+        lot_number="LOT-A", subop_no=10, created_date=dt_start,
+        pcs_no="PCS1", result="OK", production_spec="SPEC"
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT-A", subop_no=50, created_date=dt_end,
+        pcs_no="PCS1", result="OK", production_spec="SPEC"
+    )
+    # Лот LOT-B: PCS2 (должен быть исключён фильтром по лоту)
+    ProductionRecord.objects.create(
+        lot_number="LOT-B", subop_no=10, created_date=dt_start,
+        pcs_no="PCS2", result="OK", production_spec="SPEC"
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT-B", subop_no=50, created_date=dt_end,
+        pcs_no="PCS2", result="OK", production_spec="SPEC"
+    )
+
+    data = report2_line_productivity(None, None, lot_number="LOT-A")
+    assert len(data) == 1
+    assert data[0]["fol_production"] == 1  # только PCS1 из LOT-A
+    assert data[0]["fol_hours"] == 2.0
     assert data[0]["has_data"] is True
 
 
@@ -579,6 +617,18 @@ def test_report2_period_selection():
     assert invalid["error"]
 
 
+def test_report2_period_lot():
+    """Фильтр «По лоту» не задаёт диапазон дат, а передаёт номер лота."""
+    request = RequestFactory().get("/reports/2/?filter=lot&lot=MO608131-001")
+    period = _report2_period(request)
+
+    assert period["filter_type"] == "lot"
+    assert period["lot_value"] == "MO608131-001"
+    assert period["start_date"] is None
+    assert period["end_date"] is None
+    assert period["error"] == ""
+
+
 def test_report2_summary_averages_only_active_days():
     data = [
         {"fol_hours": 2, "fol_production": 10, "fol_speed": 5, "bol_hours": 0, "bol_production": 0, "bol_speed": 0},
@@ -607,7 +657,7 @@ def test_report2_view_default_year(monkeypatch):
         {"report_date": date(2026, 1, 1), "fol_hours": 2, "fol_production": 10, "fol_speed": 5, "bol_hours": 0, "bol_production": 0, "bol_speed": 0, "has_data": True},
         {"report_date": date(2026, 1, 2), "fol_hours": 0, "fol_production": 0, "fol_speed": 0, "bol_hours": 0, "bol_production": 0, "bol_speed": 0, "has_data": False},
     ]
-    monkeypatch.setattr("reports.views.report2_line_productivity", lambda start_date, end_date: rows)
+    monkeypatch.setattr("reports.views.report2_line_productivity", lambda start_date, end_date, lot_number=None: rows)
 
     request = RequestFactory().get("/reports/2/")
     response = Report2View.as_view()(request)
@@ -645,7 +695,7 @@ def test_report2_export_includes_summary_and_charts(monkeypatch):
         {"report_date": date(2026, 1, 2), "fol_hours": 0, "fol_production": 0, "fol_speed": 0, "bol_hours": 0, "bol_production": 0, "bol_speed": 0, "has_data": False},
         {"report_date": date(2026, 1, 3), "fol_hours": 4, "fol_production": 12, "fol_speed": 3, "bol_hours": 2, "bol_production": 6, "bol_speed": 3, "has_data": True},
     ]
-    monkeypatch.setattr("reports.views.report2_line_productivity", lambda start_date, end_date: rows)
+    monkeypatch.setattr("reports.views.report2_line_productivity", lambda start_date, end_date, lot_number=None: rows)
 
     request = RequestFactory().get("/reports/2/export/", {"filter": "period", "start": "2026-01-01", "end": "2026-01-03"})
     request.user = SimpleNamespace(is_authenticated=True)
@@ -679,6 +729,36 @@ def test_report2_export_includes_summary_and_charts(monkeypatch):
     charts = workbook["Диаграммы"]._charts
     assert len(charts) == 3
     assert all(len(chart.series) == 2 for chart in charts)
+
+
+def test_report2_view_lot_filter(monkeypatch):
+    """Вью с фильтром «По лоту» передаёт номер лота в запрос и отображает поле лота."""
+    from reports.views import Report2View
+
+    rows = [
+        {"report_date": date(2026, 8, 13), "fol_hours": 2, "fol_production": 10, "fol_speed": 5,
+         "bol_hours": 0, "bol_production": 0, "bol_speed": 0, "has_data": True},
+    ]
+    captured = {}
+
+    def fake_query(start_date, end_date, lot_number=None):
+        captured["lot_number"] = lot_number
+        return rows
+
+    monkeypatch.setattr("reports.views.report2_line_productivity", fake_query)
+
+    request = RequestFactory().get("/reports/2/?filter=lot&lot=MO608131-001")
+    response = Report2View.as_view()(request)
+
+    assert response.status_code == 200
+    assert captured["lot_number"] == "MO608131-001"
+    response.render()
+    content = response.content.decode()
+    assert 'value="lot" selected' in content
+    assert 'id="lot-field"' in content
+    assert 'name="lot"' in content
+    assert 'value="MO608131-001"' in content
+    assert "Фильтр: По лоту" in content
 
 
 @pytest.mark.django_db
@@ -985,11 +1065,12 @@ def test_report1_export_is_available_to_regular_user():
     [
         (1, "Report1ExportView", "report1_orders"),
         (2, "Report2ExportView", "report2_line_productivity"),
-        (3, "Report3ExportView", "report3_monthly_productivity"),
+        (3, "Report3ExportView", "report2_line_productivity"),
         (4, "Report4ExportView", "report4_defects"),
         (5, "Report5ExportView", "report5_repeated_passes"),
         (6, "Report6ExportView", "report6_serial_number"),
         (7, "Report7ExportView", "report7_station130_output"),
+        (8, "Report8ExportView", "report8_stations"),
     ],
 )
 def test_report_exports_available_to_anonymous(monkeypatch, report_number, view_name, query_name):
@@ -1008,8 +1089,250 @@ def test_report_exports_available_to_anonymous(monkeypatch, report_number, view_
     assert response["Content-Type"].startswith("application/vnd.openxmlformats")
 
 
+# ========================
+# Тесты отчёта 8: По станциям
+# ========================
+
+def test_report8_columns_count():
+    """Отчёт 8: 36 столбцов в таблице (1 Дата + 35 столбцов по станциям)."""
+    assert len(REPORT8_COLUMNS) == 36
+    assert REPORT8_COLUMNS[0][0] == "report_date"
+    assert REPORT8_COLUMNS[-1][0] == "bol_diff"
+
+
+def test_report8_period_default_year():
+    """По умолчанию фильтр «Год» — последний календарный год."""
+    today = date.today()
+    request = RequestFactory().get("/reports/8/")
+
+    period = _report8_period(request)
+
+    assert period["filter_type"] == "year"
+    assert period["year_value"] == today.year - 1
+    assert period["start_date"] == date(today.year - 1, 1, 1)
+    assert period["end_date"] == date(today.year - 1, 12, 31)
+    assert period["error"] == ""
+
+
+def test_report8_period_month():
+    """Фильтр «Месяц» задаёт корректный диапазон."""
+    request = RequestFactory().get("/reports/8/?filter=month&year=2024&month=2")
+
+    period = _report8_period(request)
+
+    assert period["filter_type"] == "month"
+    assert period["start_date"] == date(2024, 2, 1)
+    assert period["end_date"] == date(2024, 2, 29)
+
+
+def test_report8_period_lot():
+    """Фильтр «По лоту» не задаёт диапазон дат."""
+    request = RequestFactory().get("/reports/8/?filter=lot&lot=MO608131-001")
+
+    period = _report8_period(request)
+
+    assert period["filter_type"] == "lot"
+    assert period["lot_value"] == "MO608131-001"
+    assert period["start_date"] is None
+    assert period["end_date"] is None
+    assert period["error"] == ""
+
+
+def test_report8_period_invalid_year():
+    """Некорректный год мягко откатывается на последний календарный год (как в отчётах 2/3)."""
+    today = date.today()
+    request = RequestFactory().get("/reports/8/?filter=year&year=not-a-year")
+
+    period = _report8_period(request)
+
+    assert period["filter_type"] == "year"
+    assert period["year_value"] == today.year - 1
+    assert period["start_date"] == date(today.year - 1, 1, 1)
+    assert period["end_date"] == date(today.year - 1, 12, 31)
+
+
+def test_report8_period_period_invalid_range():
+    """Конец раньше начала — ошибка."""
+    request = RequestFactory().get("/reports/8/?filter=period&start=2026-09-20&end=2026-09-14")
+
+    period = _report8_period(request)
+
+    assert period["error"]
+
+
+def test_report8_summary_totals_and_averages():
+    """Сводка: суммы для счётчиков, среднее для %."""
+    data = [
+        {"report_date": date(2026, 1, 1),
+         "station_020_ok": 10, "station_020_ng": 1, "station_020_pct": 10.0, "station_020_ng_sns": [],
+         "station_080_ok": 10, "station_080_ng": 0, "station_080_pct": 0.0, "station_080_ng_sns": [],
+         "fol_diff": 2, "bol_diff": -1},
+        {"report_date": date(2026, 1, 2),
+         "station_020_ok": 10, "station_020_ng": 3, "station_020_pct": 30.0, "station_020_ng_sns": ["SN-003"],
+         "station_080_ok": 10, "station_080_ng": 1, "station_080_pct": 10.0, "station_080_ng_sns": [],
+         "fol_diff": 0, "bol_diff": -1},
+    ]
+    summary = _report8_summary(data)
+
+    assert summary["station_020_ok"] == 20
+    assert summary["station_020_ng"] == 4
+    assert summary["station_020_pct"] == round((10.0 + 30.0) / 2, 2)
+    assert summary["station_080_pct"] == round((0.0 + 10.0) / 2, 2)
+    assert summary["fol_diff"] == 2
+    assert summary["bol_diff"] == -2
+    assert summary["station_020_ng_sns"] == []
+
+
+def test_report8_view_default_year(monkeypatch):
+    """Вью по умолчанию отображает последний год и устанавливает Cache-Control: no-store."""
+    import json
+    from reports.views import Report8View
+
+    rows = [
+        {"report_date": date(2026, 1, 1),
+         "station_010_ok": 8, "station_020_ok": 10, "station_020_ng": 2, "station_020_pct": 20.0,
+         "station_020_ng_sns": ["SN-001", "SN-002"],
+         "station_030_ok": 7, "station_050_ok": 6, "fol_diff": 2,
+         "station_060_ok": 5, "station_070_ok": 5,
+         "station_080_ok": 10, "station_080_ng": 0, "station_080_pct": 0.0, "station_080_ng_sns": [],
+         "station_090_ok": 10, "station_090_ng": 1, "station_090_pct": 10.0, "station_090_ng_sns": ["SN-003"],
+         "station_100_ok": 10, "station_100_ng": 0, "station_100_pct": 0.0, "station_100_ng_sns": [],
+         "station_110_ok": 10, "station_110_ng": 0, "station_110_pct": 0.0, "station_110_ng_sns": [],
+         "station_120_ok": 10, "station_120_ng": 0, "station_120_pct": 0.0, "station_120_ng_sns": [],
+         "station_130_ok": 10, "station_130_ng": 0, "station_130_pct": 0.0, "station_130_ng_sns": [],
+         "bol_diff": 5},
+    ]
+    monkeypatch.setattr("reports.views.report8_stations", lambda start, end, lot=None: rows)
+
+    request = RequestFactory().get("/reports/8/")
+    response = Report8View.as_view()(request)
+
+    assert response.status_code == 200
+    assert response["Cache-Control"] == "no-store"
+    response.render()
+    context = response.context_data
+    assert context["filter_type"] == "year"
+    assert context["year_value"] == date.today().year - 1
+    assert b"report8DescriptionModal" in response.content
+    chart_data = json.loads(context["chart_data"])
+    # Диаграмма: динамика % NG по дням — одна линия на каждую станцию.
+    assert len(chart_data["dates"]) == 1
+    assert len(chart_data["datasets"]) == 7
+    expected_labels = ["FCT1", "FCT2", "Прошивка", "Проверка прошивки",
+                       "Герметичность", "PIN", "Этикетка"]
+    assert [ds["label"] for ds in chart_data["datasets"]] == expected_labels
+    # Каждая серия содержит значение для каждой даты и задан цвет.
+    assert all(len(ds["data"]) == 1 for ds in chart_data["datasets"])
+    assert all("color" in ds for ds in chart_data["datasets"])
+    assert len({ds["color"] for ds in chart_data["datasets"]}) == 7  # цвета разные
+    # NG SN ссылка на отчёт 6
+    assert b'href="/reports/6/?pcs_no=SN-001"' in response.content
+    # Цвета: station_020_pct > 0 → красный, station_080_pct == 0 → зелёный
+    assert b"pct-ng" in response.content
+    assert b"pct-zero" in response.content
+    # Фильтр «Год» по умолчанию: выпадающий список лет отображается и активен.
+    content = response.content.decode()
+    assert 'id="year-field"' in content
+    assert 'name="year"' in content
+    assert 'value="year" selected' in content
+    assert content.count('value="20') >= 3  # несколько лет в списке
+    # Регрессия: JS не должен скрывать year-field при выборе «Год» (старый cascade-баг).
+    assert "month: ['month-field', 'year-field']" not in content
+    assert "fieldFilters" in content
+
+
+def test_report8_export_available_to_anonymous(monkeypatch):
+    """Экспорт отчёта 8 доступен анонимным пользователям."""
+    from django.contrib.auth.models import AnonymousUser
+    from reports.views import Report8ExportView
+
+    monkeypatch.setattr("reports.views.report8_stations", lambda *a, **kw: [])
+    request = RequestFactory().get("/reports/8/export/")
+    request.user = AnonymousUser()
+
+    response = Report8ExportView.as_view()(request)
+
+    assert response.status_code == 200
+    assert response["Content-Type"].startswith("application/vnd.openxmlformats")
+    workbook = load_workbook(BytesIO(response.content))
+    assert "По станциям" in workbook.sheetnames
+
+
+def test_report8_export_includes_daily_chart(monkeypatch):
+    """Экспорт отчёта 8 содержит дневную диаграмму «Средний % NG по дням» с 7 линиями."""
+    from datetime import date
+    from django.contrib.auth.models import AnonymousUser
+    from reports.views import Report8ExportView
+
+    rows = [
+        {"report_date": date(2026, 1, 1),
+         "station_020_pct": 20.0, "station_080_pct": 0.0, "station_090_pct": 10.0,
+         "station_100_pct": 0.0, "station_110_pct": 5.0, "station_120_pct": 0.0,
+         "station_130_pct": 0.0},
+        {"report_date": date(2026, 1, 2),
+         "station_020_pct": 30.0, "station_080_pct": 0.0, "station_090_pct": 0.0,
+         "station_100_pct": 15.0, "station_110_pct": 0.0, "station_120_pct": 25.0,
+         "station_130_pct": 0.0},
+    ]
+    monkeypatch.setattr("reports.views.report8_stations", lambda *a, **kw: rows)
+
+    request = RequestFactory().get(
+        "/reports/8/export/", {"filter": "period", "start": "2026-01-01", "end": "2026-01-02"}
+    )
+    request.user = AnonymousUser()
+    response = Report8ExportView.as_view()(request)
+
+    assert response.status_code == 200
+    workbook = load_workbook(BytesIO(response.content))
+    assert "Сводка" in workbook.sheetnames
+
+    summary = workbook["Сводка"]
+    charts = summary._charts
+    assert len(charts) == 1
+    line_chart = charts[0]
+    # openpyxl хранит заголовок диаграммы как объект Title после перезагрузки.
+    title_text = str(line_chart.title)
+    assert "Средний % NG по дням" in title_text, title_text
+    assert len(line_chart.series) == 7
+
+    # Заголовки столбцов дневной диаграммы — подписи NG-типов.
+    expected_labels = ["FCT1", "FCT2", "Прошивка", "Проверка прошивки",
+                       "Герметичность", "PIN", "Этикетка"]
+    assert [summary.cell(12, col).value for col in range(2, 2 + len(expected_labels))] == expected_labels
+
+    # Даты находятся в столбце A, начиная с заголовка в строке 12.
+    assert summary.cell(12, 1).value == "Дата"
+    assert summary.cell(13, 1).value == "2026-01-01"
+    assert summary.cell(14, 1).value == "2026-01-02"
+
+    # Каждая серия окрашена в свой цвет (7 разных цветов).
+    solid_fills = [s.graphicalProperties.line.solidFill for s in line_chart.series]
+    assert all(solid_fills)
+    assert len(set(solid_fills)) == 7
+
+
 @pytest.mark.django_db
-def test_admin_anonymous_and_regular_user_redirect():
+def test_admin_dashboard_includes_report8():
+    """Админ-дашборд содержит ссылку на отчёт 8."""
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        user, _ = User.objects.get_or_create(
+            username="admin_report8",
+            defaults={"is_active": True, "is_staff": True, "is_superuser": False},
+        )
+        user.is_active = True
+        user.is_staff = True
+        user.is_superuser = False
+        user.save()
+
+        client = Client()
+        client.force_login(user)
+        response = client.get("/admin/")
+
+        assert response.status_code == 200
+        assert "Отчёт 8: По станциям" in response.content.decode()
+        assert reverse("reports:report8") in response.content.decode()
+
+
     with override_settings(ALLOWED_HOSTS=["*"]):
         anonymous_client = Client()
         anonymous_response = anonymous_client.get("/admin/")

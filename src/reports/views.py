@@ -9,7 +9,8 @@ from io import BytesIO
 from django.utils import timezone as dj_timezone
 
 import openpyxl
-from openpyxl.chart import BarChart, Reference
+from openpyxl.chart import BarChart, LineChart, Reference
+from openpyxl.chart.marker import Marker
 from openpyxl.styles import Alignment, Font, PatternFill
 from django import forms
 from django.contrib import messages
@@ -31,6 +32,13 @@ from reports.queries import (
     report5_repeated_passes,
     report6_serial_number,
     report7_station130_output,
+    report8_stations,
+    report8_table_columns,
+    REPORT8_COLUMNS,
+    REPORT8_CHART_STATIONS,
+    REPORT8_CHART_KEYS,
+    REPORT8_CHART_COLORS,
+    REPORT8_HEADER_GROUPS,
 )
 
 
@@ -49,7 +57,10 @@ SORTABLE_FIELDS = {
     "report5": ["pcs_no", "production_spec", "lot_number", "station", "dates", "comment"],
     "report6": ["pcs_no", "lot_number", "production_spec", "subop_no", "workstation_name",
                 "created_date", "result", "test_data", "comment"],
-    "report7": ["pcs_no", "lot_number", "production_spec", "created_date"],
+     "report7": ["pcs_no", "lot_number", "production_spec", "created_date"],
+    "report8": ["report_date", "fol_diff", "bol_diff", "station_020_pct", "station_080_pct",
+                "station_090_pct", "station_100_pct", "station_110_pct",
+                "station_120_pct", "station_130_pct"],
 }
 
 
@@ -190,7 +201,7 @@ def _report7_period(request):
     }
 
 
-REPORT2_PERIOD_TYPES = {"month", "year", "period"}
+REPORT2_PERIOD_TYPES = {"month", "year", "period", "lot"}
 
 
 def _report2_int(value, default, lower, upper):
@@ -209,6 +220,7 @@ def _report2_period(request):
 
     year_value = today.year
     month_value = today.month
+    lot_value = (request.GET.get("lot") or "").strip()
     start_date = today.replace(month=1, day=1)
     end_date = today.replace(month=12, day=31)
     error = ""
@@ -233,6 +245,9 @@ def _report2_period(request):
             error = "Выбран некорректный год."
             start_date = today.replace(month=1, day=1)
             end_date = today.replace(month=12, day=31)
+    elif filter_type == "lot":
+        start_date = None
+        end_date = None
     else:
         start_value = request.GET.get("start")
         end_value = request.GET.get("end")
@@ -253,12 +268,13 @@ def _report2_period(request):
         "end_date": end_date,
         "month_value": month_value,
         "year_value": year_value,
+        "lot_value": lot_value,
         "error": error,
     }
 
 
 def _report2_summary(data, start_date, end_date):
-    total_days = max(0, (end_date - start_date).days + 1)
+    total_days = max(0, (end_date - start_date).days + 1) if start_date and end_date else 0
 
     fol_hours_total = sum((row.get("fol_hours") or 0) for row in data)
     fol_production_total = sum((row.get("fol_production") or 0) for row in data)
@@ -285,6 +301,14 @@ def _report2_summary(data, start_date, end_date):
         "bol_speed": bol_speed_avg,
         "bol_active_days": bol_active_days,
     }
+
+
+def _report2_data_dates(data):
+    """Минимальная и максимальная даты строк данных (для отображения диапазона лота)."""
+    dates = [row["report_date"] for row in data if row.get("report_date")]
+    if not dates:
+        return None, None
+    return min(dates), max(dates)
 
 
 def _report7_summary(data, start_date, end_date):
@@ -408,11 +432,18 @@ class Report2View(TemplateView):
 
     def get(self, request, *args, **kwargs):
         period = _report2_period(request)
-        data = report2_line_productivity(period["start_date"], period["end_date"])
+        data = report2_line_productivity(period["start_date"], period["end_date"], period["lot_value"])
 
         sort_field, sort_dir = get_sort_params(request, "report2")
         if sort_field:
             data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report2"])
+
+        # Для фильтра «По лоту» (без диапазона дат) вычисляем диапазон из данных,
+        # чтобы сводка и индикаторы «Всего дней» были осмысленными.
+        if period["filter_type"] == "lot":
+            lot_start, lot_end = _report2_data_dates(data)
+            period["start_date"] = lot_start
+            period["end_date"] = lot_end
 
         # Filter to only show days with data
         filtered_data = [row for row in data if row.get("has_data")]
@@ -910,11 +941,17 @@ class Report2ExportView(_ExcelExportBase):
 
     def get(self, request):
         period = _report2_period(request)
-        data = report2_line_productivity(period["start_date"], period["end_date"])
+        data = report2_line_productivity(period["start_date"], period["end_date"], period["lot_value"])
 
         sort_field, sort_dir = get_sort_params(request, "report2")
         if sort_field:
             data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report2"])
+
+        # Для фильтра «По лоту» вычисляем диапазон из данных для сводки.
+        if period["filter_type"] == "lot":
+            lot_start, lot_end = _report2_data_dates(data)
+            period["start_date"] = lot_start
+            period["end_date"] = lot_end
 
         data = [row for row in data if row.get("has_data")]
         summary = _report2_summary(data, period["start_date"], period["end_date"])
@@ -1215,5 +1252,381 @@ class Report7ExportView(_ExcelExportBase):
         filename = (
             f'report7_{period["start_date"].isoformat()}'
             f'_{period["end_date"].isoformat()}.xlsx'
+        )
+        return self._make_response(wb, filename)
+
+
+# ========================
+# Отчет 8: По станциям
+# ========================
+
+REPORT8_PERIOD_TYPES = {"year", "month", "period", "lot"}
+
+REPORT8_CHART_LABELS = [label for _subop, label in REPORT8_CHART_STATIONS]
+
+
+REPORT8_DESCRIPTION = """\
+Отчёт «По станциям» показывает дневное качество прохождения каждой станции сборочной линии.
+
+Для каждой даты (в которую был зафиксирован ход производства) отображаются:
+  • уникальное количество серийных номеров (SN), прошедших станцию с результатом OK — для промежуточных станций Подача, Плазма, Сборка, Стабилизация, Burn-in;
+  • количество всех записей OK и NG на каждой тестовой станции (FCT1, FCT2, Прошивка, Проверка прошивки, Герметичность, PIN-тест, Этикетка);
+  • процент NG от OK: 0 % выделяются зелёным, больше 0 % — красным;
+  • список серийных номеров с результатом NG — каждый номер — ссылка на Отчёт по SN;
+  • разница FOL = (уникальные OK на 010) − (уникальные OK на 050);
+  • разница BOL = (уникальные OK на 060) − (уникальные OK на 130).
+Разница окрашивается: 0 — зелёный, < 0 — красный, > 0 — светло-фиолетовый.
+
+Фильтры: Год (по умолчанию — последний календарный год), Месяц, Произвольный период, По лоту.
+Экспорт в Excel доступен без авторизации.
+"""
+
+
+def _report8_int(value, default, lower, upper):
+    try:
+        parsed = int(value)
+        return parsed if lower <= parsed <= upper else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _report8_period(request):
+    """Разбор фильтра периода для отчёта 8: year, month, period, lot."""
+    today = dj_timezone.localdate()
+    filter_type = request.GET.get("filter", "year")
+    if filter_type not in REPORT8_PERIOD_TYPES:
+        filter_type = "year"
+
+    # По умолчанию — последний календарный год.
+    last_year = today.year - 1
+    year_value = last_year
+    month_value = today.month
+    lot_value = (request.GET.get("lot") or "").strip()
+    start_date = datetime(last_year, 1, 1).date()
+    end_date = datetime(last_year, 12, 31).date()
+    error = ""
+
+    if filter_type == "month":
+        year_value = _report8_int(request.GET.get("year"), last_year, 2000, 2100)
+        month_value = _report8_int(request.GET.get("month"), today.month, 1, 12)
+        try:
+            last_day = calendar.monthrange(year_value, month_value)[1]
+            start_date = datetime(year_value, month_value, 1).date()
+            end_date = datetime(year_value, month_value, last_day).date()
+        except ValueError:
+            error = "Выбран некорректный месяц."
+            start_date = datetime(last_year, 1, 1).date()
+            end_date = datetime(last_year, 12, 31).date()
+            year_value = last_year
+            month_value = today.month
+    elif filter_type == "year":
+        year_value = _report8_int(request.GET.get("year"), last_year, 2000, 2100)
+        try:
+            start_date = datetime(year_value, 1, 1).date()
+            end_date = datetime(year_value, 12, 31).date()
+        except ValueError:
+            error = "Выбран некорректный год."
+            year_value = last_year
+            start_date = datetime(last_year, 1, 1).date()
+            end_date = datetime(last_year, 12, 31).date()
+    elif filter_type == "period":
+        start_value = request.GET.get("start")
+        end_value = request.GET.get("end")
+        parsed_start = _report7_date(start_value)
+        parsed_end = _report7_date(end_value)
+        if parsed_start is None or parsed_end is None:
+            error = "Выбран некорректный период."
+        elif parsed_end < parsed_start:
+            error = "Дата начала не может быть позже даты окончания."
+        if error:
+            start_date = datetime(last_year, 1, 1).date()
+            end_date = datetime(last_year, 12, 31).date()
+        else:
+            start_date = parsed_start
+            end_date = parsed_end
+    else:  # lot
+        start_date = None
+        end_date = None
+
+    return {
+        "filter_type": filter_type,
+        "start_date": start_date,
+        "end_date": end_date,
+        "year_value": year_value,
+        "month_value": month_value,
+        "lot_value": lot_value,
+        "error": error,
+    }
+
+
+def _report8_summary(data):
+    """Сводка: суммы для счётчиков, средние для %, суммы для разностей."""
+    # Карта station_no -> (ok_key, ng_key) для столбцов %.
+    station_count_keys = {}
+    for key, station_no, kind, _r1, _r2, _css in REPORT8_COLUMNS:
+        if kind == "all_ok":
+            station_count_keys.setdefault(station_no, {})["ok"] = key
+        elif kind == "all_ng":
+            station_count_keys.setdefault(station_no, {})["ng"] = key
+
+    summary = {}
+    for key, station_no, kind, _r1, _r2, _css in REPORT8_COLUMNS:
+        if kind == "date":
+            summary[key] = ""
+            continue
+        if kind == "ng_sns":
+            summary[key] = []
+            continue
+        if kind in ("unique_ok", "all_ok", "all_ng", "diff_fol", "diff_bol"):
+            summary[key] = sum((row.get(key) or 0) for row in data)
+        elif kind == "pct":
+            count_keys = station_count_keys.get(station_no, {})
+            ok_key = count_keys.get("ok")
+            ng_key = count_keys.get("ng")
+            values = [
+                row[key] for row in data
+                if (row.get(ok_key) or 0) + (row.get(ng_key) or 0) > 0
+            ]
+            summary[key] = round(sum(values) / len(values), 2) if values else 0.0
+    return summary
+
+
+def _build_report8_chart_data(data):
+    """Дневные данные для диаграммы «Средний % NG по дням».
+
+    Возвращает список дат (ось X) и набор серий — по одной линии на каждую
+    тестовую станцию: FCT1, FCT2, Прошивка, Проверка прошивки, Герметичность,
+    PIN, Этикетка. Каждая серия содержит значения % NG для каждой даты,
+    каждый NG-тип окрашен в свой цвет.
+    """
+    dates = [
+        (row["report_date"].isoformat() if row.get("report_date") else "")
+        for row in data
+    ]
+    datasets = []
+    for (_subop, label), key, color in zip(
+        REPORT8_CHART_STATIONS, REPORT8_CHART_KEYS, REPORT8_CHART_COLORS
+    ):
+        datasets.append({
+            "label": label,
+            "color": color,
+            "data": [float(row.get(key) or 0) for row in data],
+        })
+    return {"dates": dates, "datasets": datasets}
+
+
+class Report8View(TemplateView):
+    template_name = "reports/report8.html"
+
+    def get(self, request, *args, **kwargs):
+        period = _report8_period(request)
+        data = report8_stations(period["start_date"], period["end_date"], period["lot_value"])
+
+        sort_field, sort_dir = get_sort_params(request, "report8")
+        if sort_field:
+            data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report8"])
+        else:
+            data = apply_sort(data, "report_date", "asc", SORTABLE_FIELDS["report8"])
+
+        summary = _report8_summary(data)
+        chart_data = _build_report8_chart_data(data)
+        chart_summary = [
+            (label, summary[key])
+            for (_subop, label), key in zip(REPORT8_CHART_STATIONS, REPORT8_CHART_KEYS)
+        ]
+
+        if period["error"]:
+            messages.error(request, period["error"])
+
+        today = dj_timezone.localdate()
+        response = self.render_to_response(self.get_context_data(
+            data=data,
+            summary=summary,
+            table_summary=summary,
+            chart_data=json.dumps(chart_data),
+            chart_summary=chart_summary,
+            columns=report8_table_columns(),
+            header_groups=REPORT8_HEADER_GROUPS,
+            report8_description_lines=REPORT8_DESCRIPTION.strip().split("\n"),
+            years=range(2024, today.year + 2),
+            months=range(1, 13),
+            sort_field=sort_field,
+            sort_dir=sort_dir,
+            **period,
+        ))
+        response["Cache-Control"] = "no-store"
+        return response
+
+
+class Report8ExportView(_ExcelExportBase):
+    def get(self, request):
+        period = _report8_period(request)
+        data = report8_stations(period["start_date"], period["end_date"], period["lot_value"])
+
+        sort_field, sort_dir = get_sort_params(request, "report8")
+        if sort_field:
+            data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report8"])
+        else:
+            data = apply_sort(data, "report_date", "asc", SORTABLE_FIELDS["report8"])
+
+        summary = _report8_summary(data)
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "По станциям"
+
+        green_fill = "D4EDDA"
+        red_fill = "F8D7DA"
+        violet_fill = "E6E6FA"
+
+        # Row 1: station titles with merged cells for groups.
+        col = 1
+        group_col_start = {}
+        for group in REPORT8_HEADER_GROUPS:
+            title = group["title"]
+            span = group["span"]
+            if span > 1:
+                ws.merge_cells(start_row=1, start_column=col, end_row=1, end_column=col + span - 1)
+            cell = ws.cell(1, col, title)
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            if span > 1:
+                cell.alignment = Alignment(horizontal="center", vertical="center", textRotation=0)
+            group_col_start[col] = title
+            col += span
+
+        # Row 2: sub-headers.
+        for idx, (key, station_no, kind, _r1, r2_title, css) in enumerate(REPORT8_COLUMNS, 1):
+            cell = ws.cell(2, idx, r2_title or "")
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal="center")
+            cell.fill = PatternFill("solid", fgColor="1F4E78")
+            cell.font = Font(bold=True, color="FFFFFF")
+
+        data_ws = ws
+        for row_num, row in enumerate(data, 3):
+            for idx, (key, station_no, kind, _r1, _r2, css) in enumerate(REPORT8_COLUMNS, 1):
+                cell = data_ws.cell(row_num, idx)
+                value = row.get(key)
+                if kind == "date":
+                    cell.value = self._excel_value(value).strftime("%Y-%m-%d") if value else ""
+                elif kind == "ng_sns":
+                    cell.value = ", ".join(value) if value else ""
+                elif kind == "pct":
+                    cell.value = float(value) if value is not None else 0
+                    cell.fill = PatternFill("solid", fgColor=green_fill if value == 0 else red_fill)
+                    cell.number_format = "0.00"
+                elif kind in ("diff_fol", "diff_bol"):
+                    cell.value = int(value) if value is not None else 0
+                    v = value or 0
+                    cell.fill = PatternFill("solid", fgColor=green_fill if v == 0 else (red_fill if v < 0 else violet_fill))
+                else:
+                    cell.value = int(value) if value is not None else 0
+
+        # Summary row.
+        summary_row = len(data) + 3
+        data_ws.cell(summary_row, 1, "Итог")
+        for idx, (key, station_no, kind, _r1, _r2, css) in enumerate(REPORT8_COLUMNS, 1):
+            if idx == 1:
+                continue
+            cell = data_ws.cell(summary_row, idx)
+            cell.font = Font(bold=True)
+            value = summary.get(key)
+            if kind == "ng_sns":
+                cell.value = ""
+            elif kind == "pct":
+                cell.value = float(value) if value is not None else 0
+                cell.fill = PatternFill("solid", fgColor=green_fill if value == 0 else red_fill)
+                cell.number_format = "0.00"
+            elif kind in ("diff_fol", "diff_bol"):
+                cell.value = int(value) if value is not None else 0
+                v = value or 0
+                cell.fill = PatternFill("solid", fgColor=green_fill if v == 0 else (red_fill if v < 0 else violet_fill))
+            else:
+                cell.value = int(value) if value is not None else 0
+
+        data_ws.freeze_panes = "A3"
+        data_ws.auto_filter.ref = f"A1:{data_ws.cell(2, len(REPORT8_COLUMNS)).coordinate}"
+
+        # Summary sheet.
+        summary_ws = wb.create_sheet("Сводка")
+        summary_ws["A1"] = "Отчёт 8: По станциям"
+        summary_ws["A1"].font = Font(bold=True, size=14, color="FFFFFF")
+        summary_ws["A1"].fill = PatternFill("solid", fgColor="1F4E78")
+        summary_ws["A1"].alignment = Alignment(horizontal="center")
+
+        date_str = ""
+        if period["start_date"] and period["end_date"]:
+            date_str = f'{period["start_date"].isoformat()} — {period["end_date"].isoformat()}'
+        else:
+            date_str = "По лоту: " + period["lot_value"] if period["lot_value"] else "без фильтра по дате"
+
+        summary_rows = [
+            ["Период", date_str],
+            ["Фильтр", period["filter_type"]],
+        ]
+        for sr, row in enumerate(summary_rows, 2):
+            for sc, val in enumerate(row, 1):
+                summary_ws.cell(sr, sc, val)
+
+        chart_row = 4
+        for idx, (label, key) in enumerate(zip(REPORT8_CHART_LABELS, REPORT8_CHART_KEYS), chart_row):
+            summary_ws.cell(idx, 1, label)
+            summary_ws.cell(idx, 2, float(summary.get(key) or 0))
+
+        # Дневная диаграмма «Средний % NG по дням»: одна линия на каждую
+        # тестовую станцию (FCT1, FCT2, …) — динамика % NG по датам.
+        chart_series = _build_report8_chart_data(data)
+        chart_dates = chart_series["dates"]
+        chart_datasets = chart_series["datasets"]
+        n_series = len(chart_datasets)
+
+        if chart_dates:
+            daily_header_row = chart_row + len(REPORT8_CHART_LABELS) + 1  # строка 12 (пропуск строки 11)
+            # Заголовки колонок дневного графика.
+            summary_ws.cell(daily_header_row, 1, "Дата")
+            summary_ws.cell(daily_header_row, 1).font = Font(bold=True)
+            for col_idx, ds in enumerate(chart_datasets, 2):
+                summary_ws.cell(daily_header_row, col_idx, ds["label"])
+                summary_ws.cell(daily_header_row, col_idx).font = Font(bold=True)
+
+            # Значения по датам.
+            first_data_row = daily_header_row + 1
+            last_data_row = daily_header_row + len(chart_dates)
+            for row_idx, date_str in enumerate(chart_dates, first_data_row):
+                summary_ws.cell(row_idx, 1, date_str)
+            for col_idx, ds in enumerate(chart_datasets, 2):
+                for row_idx, value in enumerate(ds["data"], first_data_row):
+                    summary_ws.cell(row_idx, col_idx, float(value))
+
+            # Линия: одна серия на станцию, каждая своего цвета.
+            data_ref = Reference(
+                summary_ws, min_col=2, min_row=daily_header_row,
+                max_col=2 + n_series - 1, max_row=last_data_row,
+            )
+            cats_ref = Reference(
+                summary_ws, min_col=1, min_row=first_data_row, max_row=last_data_row,
+            )
+            line_chart = LineChart()
+            line_chart.style = 12
+            line_chart.title = "Средний % NG по дням"
+            line_chart.y_axis.title = "Средний % NG"
+            line_chart.x_axis.title = "Дата"
+            line_chart.height = 9
+            line_chart.width = 22
+            line_chart.legend.position = "r"
+            line_chart.add_data(data_ref, titles_from_data=True)
+            line_chart.set_categories(cats_ref)
+            for series, ds in zip(line_chart.series, chart_datasets):
+                color_hex = ds["color"].lstrip("#").upper()
+                series.graphicalProperties.line.solidFill = color_hex
+                series.graphicalProperties.line.width = 2.25
+                series.marker = Marker(symbol="circle", size=5)
+            summary_ws.add_chart(line_chart, "J12")
+
+        filename = (
+            f'report8_stations_'
+            f'{period["start_date"].isoformat() if period.get("start_date") else "lot"}_'
+            f'{period["end_date"].isoformat() if period.get("end_date") else period["lot_value"]}.xlsx'
         )
         return self._make_response(wb, filename)

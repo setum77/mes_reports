@@ -6,6 +6,13 @@ from builtins import sum as _sum
 register = template.Library()
 
 
+def _to_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 @register.filter
 def sum(data, field):
     """Суммирует значения поля в списке словарей."""
@@ -99,3 +106,41 @@ def sort_table(data, sort_spec):
         return (0, val)
 
     return sorted(data, key=get_key, reverse=reverse)
+
+
+def _to_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+@register.filter
+def get_item(data, key):
+    """Возвращает значение data[key] для словаря или списка (доступ по индексу)."""
+    if isinstance(data, dict):
+        return data.get(key)
+    try:
+        return data[key]
+    except (TypeError, IndexError, KeyError):
+        return None
+
+
+@register.filter
+def pct_class(value):
+    """Класс цвета для % NG: green если 0, red если > 0."""
+    v = _to_float(value)
+    if v is None:
+        return ""
+    return "pct-zero" if v == 0 else "pct-ng"
+
+
+@register.filter
+def diff_class(value):
+    """Класс цвета для разницы: green если 0, red если <0, violet если >0."""
+    v = _to_float(value)
+    if v is None:
+        return ""
+    if v == 0:
+        return "diff-zero"
+    return "diff-neg" if v < 0 else "diff-pos"

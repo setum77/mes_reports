@@ -1,0 +1,268 @@
+{% extends "base.html" %}
+{% load report_tags %}
+
+{% block extra_css %}
+<style>
+.table .pct-zero { background-color: #d4edda; }
+.table .pct-ng { background-color: #f8d7da; }
+.table .diff-zero { background-color: #d4edda; }
+.table .diff-neg { background-color: #f8d7da; }
+.table .diff-pos { background-color: #e6e6fa; }
+.table th.position-sticky { position: sticky; left: 0; z-index: 2; }
+.table td.position-sticky { position: sticky; left: 0; z-index: 1; }
+.table th.bg-white { background-color: #fff; }
+.chart-container { position: relative; height: 480px; margin-bottom: 1.5rem; }
+.chart-container canvas { width: 100% !important; height: 100% !important; }
+.table-sm td, .table-sm th { padding: 0.35rem 0.4rem; font-size: 0.82rem; }
+.table .group-start { border-left: 2px solid #6c757d; }
+.table .group-start:first-child { border-left: none; }
+.decimal-2 { text-align: right; }
+</style>
+{% endblock %}
+
+{% block title %}Отчет 8: По станциям{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="h3 mb-0">Отчёт по станциям</h1>
+    <div>
+        <button type="button" class="btn btn-outline-info btn-sm me-2" data-bs-toggle="modal" data-bs-target="#report8DescriptionModal">Описание отчёта</button>
+        <a href="{% url 'reports:report8_export' %}?{{ request.GET.urlencode }}" class="btn btn-outline-success">Экспорт в Excel</a>
+    </div>
+</div>
+
+<div class="card p-3 mb-4">
+    <form method="get" class="row g-3 align-items-end" autocomplete="off">
+        <div class="col-auto">
+            <label class="form-label">Период</label>
+            <select name="filter" class="form-select form-select-sm" onchange="togglePeriodFields(this.value)">
+                <option value="year" {% if filter_type == 'year' %}selected{% endif %}>Год</option>
+                <option value="month" {% if filter_type == 'month' %}selected{% endif %}>Месяц</option>
+                <option value="period" {% if filter_type == 'period' %}selected{% endif %}>Произвольный период</option>
+                <option value="lot" {% if filter_type == 'lot' %}selected{% endif %}>По лоту</option>
+            </select>
+        </div>
+        <div class="col-auto" id="year-field" style="display:{% if filter_type == 'year' or filter_type == 'month' %}block{% else %}none{% endif %};">
+            <label for="year" class="form-label">Год</label>
+            <select id="year" name="year" class="form-select form-select-sm">
+                {% for year_number in years %}
+                <option value="{{ year_number }}" {% if year_number == year_value %}selected{% endif %}>{{ year_number }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-auto" id="month-field" style="display:{% if filter_type == 'month' %}block{% else %}none{% endif %};">
+            <label for="month" class="form-label">Месяц</label>
+            <select id="month" name="month" class="form-select form-select-sm">
+                {% for month_number in months %}
+                <option value="{{ month_number }}" {% if month_number == month_value %}selected{% endif %}>{{ month_number }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-auto" id="period-start" style="display:{% if filter_type == 'period' %}block{% else %}none{% endif %};">
+            <label for="start" class="form-label">Дата с</label>
+            <input id="start" name="start" type="date" class="form-control form-control-sm" value="{{ start_date|date:'Y-m-d' }}">
+        </div>
+        <div class="col-auto" id="period-end" style="display:{% if filter_type == 'period' %}block{% else %}none{% endif %};">
+            <label for="end" class="form-label">Дата по</label>
+            <input id="end" name="end" type="date" class="form-control form-control-sm" value="{{ end_date|date:'Y-m-d' }}">
+        </div>
+        <div class="col-auto" id="lot-field" style="display:{% if filter_type == 'lot' %}block{% else %}none{% endif %};">
+            <label for="lot" class="form-label">Номер лота</label>
+            <input id="lot" type="text" name="lot" class="form-control form-control-sm" placeholder="MO608131-001" value="{{ lot_value }}">
+        </div>
+        <div class="col-auto">
+            <button type="submit" class="btn btn-primary btn-sm">Обновить</button>
+        </div>
+    </form>
+</div>
+
+{% if error %}
+<div class="alert alert-danger">{{ error }}</div>
+{% endif %}
+
+<p class="text-muted small mb-3">
+    {% if start_date and end_date %}
+    Период: {{ start_date|date:"Y-m-d" }} — {{ end_date|date:"Y-m-d" }}
+    {% else %}
+    Фильтр: По лоту ({{ lot_value|default:'не указан' }})
+    {% endif %}
+</p>
+
+<div class="stats-grid mb-4">
+    {% for label, pct in chart_summary %}
+    <div class="stats-card text-center">
+        <div class="text-muted small">{{ label }}</div>
+        <div class="h5" style="{% if pct == 0 %}color: #10b981{% else %}color: #ef4444{% endif %};">{{ pct }}%</div>
+        <div class="text-muted small">Средний % NG</div>
+    </div>
+    {% endfor %}
+</div>
+
+<div class="chart-container card p-3">
+    <canvas id="chartPct"></canvas>
+</div>
+
+<div class="table-responsive mt-4">
+    <table class="table table-sm table-hover align-middle">
+        <thead>
+            <tr>
+                {% for group in header_groups %}
+                <th {% if group.span > 1 %}colspan="{{ group.span }}"{% endif %} class="bg-white text-center{% if not forloop.first %} group-start{% endif %}">{{ group.title }}</th>
+                {% endfor %}
+            </tr>
+            <tr>
+                {% for col in columns %}
+                <th class="bg-white text-center {% if col.2 == 'pct' or col.2 == 'diff_fol' or col.2 == 'diff_bol' %}decimal-2{% endif %}{% if col.6 %} group-start{% endif %}">{{ col.4 }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in data %}
+            <tr>
+                {% for col in columns %}
+                {% if col.2 == 'date' %}
+                <td class="position-sticky bg-white small text-nowrap{% if col.6 %} group-start{% endif %}">{{ row.report_date|date:"Y-m-d" }}</td>
+                {% elif col.2 == 'unique_ok' or col.2 == 'all_ok' or col.2 == 'all_ng' %}
+                <td class="text-center{% if col.6 %} group-start{% endif %}">{{ row|get_item:col.0 }}</td>
+                {% elif col.2 == 'pct' %}
+                <td class="text-center {% if row|get_item:col.0 %}{{ row|get_item:col.0|pct_class }}{% endif %}{% if col.6 %} group-start{% endif %}">{{ row|get_item:col.0 }}</td>
+                {% elif col.2 == 'ng_sns' %}
+                <td class="small{% if col.6 %} group-start{% endif %}">
+                    {% for sn in row|get_item:col.0 %}
+                    <a href="{% url 'reports:report6' %}?pcs_no={{ sn|urlencode }}" class="d-block text-decoration-none font-monospace">{{ sn }}</a>
+                    {% empty %}
+                    —
+                    {% endfor %}
+                </td>
+                {% elif col.2 == 'diff_fol' or col.2 == 'diff_bol' %}
+                <td class="text-center {{ row|get_item:col.0|diff_class }}{% if col.6 %} group-start{% endif %}">{{ row|get_item:col.0 }}</td>
+                {% else %}
+                <td>{{ row|get_item:col.0 }}</td>
+                {% endif %}
+                {% endfor %}
+            </tr>
+            {% empty %}
+            <tr><td colspan="{{ columns|length }}" class="text-center text-muted py-4">Нет данных</td></tr>
+            {% endfor %}
+        </tbody>
+        <tfoot>
+            <tr class="table-light">
+                {% for col in columns %}
+                {% if col.2 == 'date' %}
+                <th class="position-sticky bg-light">Итог</th>
+                {% else %}
+                <th class="text-center {% if col.2 == 'pct' or col.2 == 'diff_fol' or col.2 == 'diff_bol' %}decimal-2{% endif %}{% if col.6 %} group-start{% endif %}">{{ summary|get_item:col.0 }}</th>
+                {% endif %}
+                {% endfor %}
+            </tr>
+        </tfoot>
+    </table>
+</div>
+
+<div class="d-flex justify-content-end my-3">
+    <button type="button" class="btn btn-outline-primary btn-sm" onclick="window.scrollTo({top:0,behavior:'smooth'})">Наверх</button>
+</div>
+
+<!-- Description modal -->
+<div class="modal fade" id="report8DescriptionModal" tabindex="-1" aria-labelledby="report8DescriptionLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="report8DescriptionLabel">Описание отчёта «По станциям»</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2">Отчёт «По станциям» показывает дневное качество прохождения каждой станции сборочной линии.</p>
+                {% for line in report8_description_lines %}
+                <p class="mb-1">{{ line }}</p>
+                {% endfor %}
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Понятно</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function togglePeriodFields(value) {
+    // Фильтры, для которых отображается каждое поле. Год нужен и для «Год», и для «Месяц»,
+    // поэтому поле не просто скрывается «все, кроме своего» — иначе оно гаснется другим
+    // правилом. Сравнение по набору фильтров избавляет от двойного переключателя.
+    var fieldFilters = {
+        'year-field': ['year', 'month'],
+        'month-field': ['month'],
+        'period-start': ['period'],
+        'period-end': ['period'],
+        'lot-field': ['lot']
+    };
+    Object.entries(fieldFilters).forEach(function(entry) {
+        var id = entry[0];
+        var filters = entry[1];
+        var el = document.getElementById(id);
+        if (el) {
+            if (filters.indexOf(value) !== -1) {
+                el.style.display = 'block';
+                el.disabled = false;
+            } else {
+                el.style.display = 'none';
+                el.disabled = true;
+            }
+        }
+    });
+}
+document.addEventListener('DOMContentLoaded', function() {
+    togglePeriodFields('{{ filter_type }}');
+});
+
+const chartData = {{ chart_data|safe }};
+
+// Преобразует HEX-цвет в rgba с заданной прозрачностью (для заливки под линией).
+function hexToRgba(hex, alpha) {
+    var h = hex.replace('#', '');
+    var r = parseInt(h.substring(0, 2), 16);
+    var g = parseInt(h.substring(2, 4), 16);
+    var b = parseInt(h.substring(4, 6), 16);
+    return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+}
+
+// Динамика каждого NG по дням: по одной линии на каждую тестовую станцию.
+// В легенде: FCT1, FCT2, Прошивка, Проверка прошивки, Герметичность, PIN, Этикетка —
+// каждый график своего цвета.
+var datasets = chartData.datasets.map(function (ds) {
+    return {
+        label: ds.label,
+        borderColor: ds.color,
+        backgroundColor: hexToRgba(ds.color, 0.1),
+        data: ds.data,
+        fill: false,
+        tension: 0.3,
+        pointRadius: 5,
+        pointHoverRadius: 7,
+    };
+});
+
+new Chart(document.getElementById('chartPct').getContext('2d'), {
+    type: 'line',
+    data: {
+        labels: chartData.dates,
+        datasets: datasets
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        layout: {padding: {top: 20}},
+        plugins: {
+            legend: {display: true, position: 'top'},
+            title: {display: true, text: 'Средний % NG по дням'}
+        },
+        scales: {
+            x: {grid: {display: false}, ticks: {maxRotation: 45, minRotation: 0, autoSkip: true}},
+            y: {beginAtZero: true, title: {display: true, text: '%'}}
+        }
+    }
+});
+</script>
+{% endblock %}
