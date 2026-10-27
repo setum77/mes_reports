@@ -2,6 +2,7 @@
 Основные запросы для отчетов.
 Все функции возвращают списки словарей, готовые для шаблонов.
 """
+from collections import Counter
 from datetime import date, timedelta
 from django.db import connection
 
@@ -662,8 +663,94 @@ def report6_serial_number(pcs_no):
             "test_data": record.test_data or "",
             "comment": comments.get(record.pcs_no, ""),
         }
-        for record in records
-    ]
+         for record in records
+     ]
+
+
+def report6_summary(pcs_no):
+    """
+    Сводка по серийному номеру для отчёта 6.
+
+    Возвращает словарь с:
+      pcs_no, lot_number, production_spec, assembly_start,
+      assembly_end, completed, last_station, last_station_date,
+      last_station_status, comment, double_passes.
+
+    double_passes — станции, пройденные более 2 раз (формат: "20 - 3, 70 - 2").
+
+    completed = True, если SN прошёл станцию 130 (STATION_BOL_END) с OK.
+    completed = False — сборка не завершена: в last_station / last_station_date
+    возвращается последняя пройденная станция и её дата/время,
+    last_station_status — статус этой станции (OK или NG).
+    """
+    if not pcs_no:
+        return None
+
+    from production.models import ProductionRecord, SNComment
+
+    records = list(
+        ProductionRecord.objects.filter(pcs_no=pcs_no).order_by("created_date", "id")
+    )
+    if not records:
+        return None
+
+    first = records[0]
+
+    start_record = next(
+        (r for r in records if r.subop_no == STATION_FOL_START),
+        None,
+    )
+    assembly_start = start_record.created_date if start_record else first.created_date
+
+    end_record = None
+    for r in reversed(records):
+        if r.subop_no == STATION_BOL_END and (r.result or "").upper() == "OK":
+            end_record = r
+            break
+
+    comment = ""
+    sn_comment = SNComment.objects.filter(pcs_no=pcs_no).first()
+    if sn_comment:
+        comment = sn_comment.comment
+
+    subop_counts = Counter(r.subop_no for r in records)
+    double_passes = ", ".join(
+        f"{sn} - {count}" for sn, count in sorted(subop_counts.items()) if count > 2
+    )
+
+    if end_record:
+        return {
+            "pcs_no": pcs_no,
+            "lot_number": end_record.lot_number,
+            "production_spec": end_record.production_spec or "",
+            "assembly_start": assembly_start,
+            "assembly_end": end_record.created_date,
+            "completed": True,
+            "last_station": "",
+            "last_station_date": None,
+            "comment": comment,
+            "double_passes": double_passes,
+        }
+
+    last_record = records[-1]
+
+    station_name = REPORT4_STATION_NAMES.get(last_record.subop_no)
+    if not station_name:
+        station_name = translate_workstation_name(last_record.position_no, last_record.workstation_name)
+
+    return {
+        "pcs_no": pcs_no,
+        "lot_number": first.lot_number,
+        "production_spec": first.production_spec or "",
+        "assembly_start": assembly_start,
+        "assembly_end": None,
+        "completed": False,
+        "last_station": station_name or "",
+        "last_station_date": last_record.created_date,
+        "last_station_status": (last_record.result or "").upper(),
+        "comment": comment,
+        "double_passes": double_passes,
+    }
 
 
 def report7_station130_output(start_date, end_date):

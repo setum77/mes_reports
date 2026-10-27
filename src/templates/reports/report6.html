@@ -3,75 +3,176 @@
 
 {% block title %}Отчет 6: Серийный номер{% endblock %}
 
-{% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <h1 class="h3 mb-0">Отчет по SN</h1>
-    {% if exists %}
-    <a href="{% url 'reports:report6_export' %}?{{ request.GET.urlencode }}" class="btn btn-outline-success">Экспорт в Excel</a>
-    {% endif %}
-</div>
-
-<div class="card p-3 mb-4">
-    <form method="get" class="row g-3 align-items-end">
-        <div class="col-md-8">
-            <label for="pcs_no" class="form-label">Серийный номер</label>
-            <input id="pcs_no" name="pcs_no" type="text" maxlength="100" class="form-control" value="{{ pcs_no }}" placeholder="Введите серийный номер БУ" required>
-        </div>
-        <div class="col-auto">
-            <button type="submit" class="btn btn-primary">Найти</button>
-        </div>
-    </form>
-</div>
-
-{% if pcs_no and not exists %}
-<div class="alert alert-danger">Серийный номер не найден в базе.</div>
-{% endif %}
-
-{% if exists %}
-<div class="table-responsive">
-    <table class="table table-sm table-hover align-middle">
-        <thead class="table-light">
-            <tr>
-                <th>{% sort_link "pcs_no" "PCSNo - Серийный номер" %}</th>
-                <th>{% sort_link "lot_number" "Lot no. - Лот" %}</th>
-                <th>{% sort_link "production_spec" "Production spec. - Спецификация" %}</th>
-                <th>{% sort_link "subop_no" "Subop no - Номер станции" %}</th>
-                <th>{% sort_link "workstation_name" "WorkstationName - Название станции" %}</th>
-                <th>{% sort_link "created_date" "CREATEDATE - Дата и время прохождения" %}</th>
-                <th>{% sort_link "result" "result - Статус" %}</th>
-                <th>{% sort_link "test_data" "testData - Данные теста" %}</th>
-                <th>{% sort_link "comment" "Комментарий" %}</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for row in data %}
-            <tr>
-                <td class="font-monospace">{{ row.pcs_no }}</td>
-                <td>{{ row.lot_number }}</td>
-                <td>{{ row.production_spec }}</td>
-                <td>{{ row.subop_no }}</td>
-                <td>{{ row.workstation_name }}</td>
-                <td class="text-nowrap">{{ row.created_date|date:"Y-m-d H:i:s" }}</td>
-                <td>{{ row.result }}</td>
-                <td class="test-data">{{ row.test_data }}</td>
-                <td class="small">{{ row.comment|default:'' }}</td>
-            </tr>
-            {% empty %}
-            <tr><td colspan="9" class="text-center text-muted py-4">Нет данных</td></tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
-
-<div class="card p-3 mt-3">
-    <h6>Сводка</h6>
-    <span class="badge bg-secondary">Всего записей: {{ data|length }}</span>
-</div>
-{% endif %}
-{% endblock %}
-
 {% block extra_css %}
 <style>
     .test-data { white-space: pre-wrap; word-break: break-word; max-width: 420px; }
+    .sidebar-recent .list-group-item { padding: 0.35rem 0.5rem; }
+    .summary-ok { background-color: #d4edda; }
+    .summary-error { background-color: #f8d7da; }
+    .summary-label { width: 140px; }
 </style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1 class="h3 mb-0">Отчет по SN</h1>
+    <div>
+        <button type="button" class="btn btn-outline-info btn-sm me-2" data-bs-toggle="modal" data-bs-target="#report6DescriptionModal">Описание отчёта</button>
+        {% if exists %}
+        <a href="{% url 'reports:report6_export' %}?{{ request.GET.urlencode }}" class="btn btn-outline-success">Экспорт в Excel</a>
+        {% endif %}
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-3 mb-4">
+        <div class="card p-3">
+            <h6 class="mb-2">Последние просмотренные SN</h6>
+            {% if recent_sns %}
+            <div class="list-group list-group-flush sidebar-recent">
+                {% for sn in recent_sns %}
+                <a href="{% url 'reports:report6' %}?pcs_no={{ sn|urlencode }}" class="list-group-item list-group-item-action sn-link font-monospace small d-flex justify-content-between align-items-center">
+                    <span>{{ sn }}</span>
+                    {% with comment=recent_sns_comments|get_item:sn %}
+                    {% if comment %}{{ comment|truncatechars:15 }}{% endif %}
+                    {% endwith %}
+                </a>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p class="text-muted small mb-0">Пока нет просмотренных SN</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="col-md-9">
+        <div class="card p-3 mb-4">
+            <form method="get" class="row g-3 align-items-end" autocomplete="off">
+                <div class="col-md-8">
+                    <label for="pcs_no" class="form-label">Серийный номер</label>
+                    <input id="pcs_no" name="pcs_no" type="text" maxlength="100" class="form-control" value="{{ pcs_no }}" placeholder="Введите серийный номер БУ" required>
+                </div>
+                <div class="col-auto">
+                    <button type="submit" class="btn btn-primary">Найти</button>
+                </div>
+            </form>
+        </div>
+
+        {% if pcs_no and not exists %}
+        <div class="alert alert-danger">Серийный номер не найден в базе.</div>
+        {% endif %}
+
+        {% if exists and summary %}
+        <div class="card p-3 mb-4">
+            <h6 class="mb-3">Сводка</h6>
+            <div class="row g-2">
+                <div class="col-md-6">
+                    <div class="row g-1">
+                        <div class="col-sm-5 col-md summary-label text-muted small">SN</div>
+                        <div class="col-sm-7 col-md font-monospace">{{ summary.pcs_no }}</div>
+                    </div>
+                    <div class="row g-1">
+                        <div class="col-sm-5 col-md summary-label text-muted small">Лот</div>
+                        <div class="col-sm-7 col-md">{{ summary.lot_number }}</div>
+                    </div>
+                    <div class="row g-1">
+                        <div class="col-sm-5 col-md summary-label text-muted small">Спецификация</div>
+                        <div class="col-sm-7 col-md">{{ summary.production_spec }}</div>
+                    </div>
+                    <div class="row g-1">
+                        <div class="col-sm-5 col-md summary-label text-muted small">Начало сборки</div>
+                        <div class="col-sm-7 col-md text-nowrap">{{ summary.assembly_start|date:"Y-m-d H:i:s" }}</div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="row g-1">
+                        <div class="col-sm-5 col-md summary-label text-muted small">Окончание сборки</div>
+                        <div class="col-sm-7 col-md">
+                            {% if summary.completed %}
+                            <span class="badge bg-success p-2">{{ summary.assembly_end|date:"Y-m-d H:i:s" }}</span>
+                            {% else %}
+                            <span class="badge bg-danger">
+                                <span class="d-block">{{ summary.last_station }} ({{ summary.last_station_status }})</span>
+                                <span class="text-muted small">{{ summary.last_station_date|date:"Y-m-d H:i:s" }}</span>
+                            </span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="row g-1 mt-2">
+                        <div class="col-sm-5 col-md summary-label text-muted small">Комментарий</div>
+                        <div class="col-sm-7 col-md">
+                            <span>{{ summary.comment|default:'' }}</span>
+                            {% if user.is_staff %}
+                            <a href="{% url 'reports:sn_comment_edit' summary.pcs_no %}" class="btn btn-outline-secondary btn-sm ms-2" title="Редактировать комментарий">
+                                <i class="bi bi-pencil"></i>
+                            </a>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="row g-1 mt-2">
+                        <div class="col-sm-5 col-md summary-label text-muted small">Двойные проходы</div>
+                        <div class="col-sm-7 col-md">{{ summary.double_passes|default:'' }}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if exists %}
+        <div class="table-responsive">
+            <table class="table table-sm table-hover align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>{% sort_link "pcs_no" "PCSNo - Серийный номер" %}</th>
+                        <th>{% sort_link "subop_no" "Subop no - Номер станции" %}</th>
+                        <th>{% sort_link "workstation_name" "WorkstationName - Название станции" %}</th>
+                        <th>{% sort_link "created_date" "CREATEDATE - Дата и время прохождения" %}</th>
+                        <th>{% sort_link "result" "result - Статус" %}</th>
+                        <th>{% sort_link "test_data" "testData - Данные теста" %}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in data %}
+                    <tr>
+                        <td class="font-monospace">{{ row.pcs_no }}</td>
+                        <td>{{ row.subop_no }}</td>
+                        <td>{{ row.workstation_name }}</td>
+                        <td class="text-nowrap">{{ row.created_date|date:"Y-m-d H:i:s" }}</td>
+                        <td>{{ row.result }}</td>
+                        <td class="test-data">{{ row.test_data }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="6" class="text-center text-muted py-4">Нет данных</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="card p-3 mt-3">
+            <h6>Сводка</h6>
+            <span class="badge bg-secondary">Всего записей: {{ data|length }}</span>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Description modal -->
+<div class="modal fade" id="report6DescriptionModal" tabindex="-1" aria-labelledby="report6DescriptionLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="report6DescriptionLabel">Описание отчёта «По SN»</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+            </div>
+            <div class="modal-body">
+                {% for line in report6_description_lines %}
+                <p class="mb-1">{{ line }}</p>
+                {% endfor %}
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Понятно</button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}

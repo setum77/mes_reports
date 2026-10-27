@@ -28,6 +28,7 @@ from reports.queries import (
     report4_defects,
     report5_repeated_passes,
     report6_serial_number,
+    report6_summary,
     report7_station130_output,
     report8_stations,
     translate_workstation_name,
@@ -248,6 +249,186 @@ def test_report6_includes_sn_comment():
     data = report6_serial_number(pcs_no)
 
     assert data[0]["comment"] == "SN-комментарий"
+
+
+@pytest.mark.django_db
+def test_report6_summary_completed():
+    """Summary: SN прошёл станцию 130 с OK → completed=True."""
+    pcs_no = "SN-REPORT6-SUMMARY-DONE"
+    dt_start = timezone.make_aware(datetime(2026, 9, 15, 10, 0, 0))
+    dt_end = timezone.make_aware(datetime(2026, 9, 15, 12, 0, 0))
+
+    ProductionRecord.objects.create(
+        lot_number="LOT-DONE", production_spec="SPEC-DONE", subop_no=10,
+        pcs_no=pcs_no, created_date=dt_start, result="OK",
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT-DONE", production_spec="SPEC-DONE", subop_no=130,
+        pcs_no=pcs_no, created_date=dt_end, result="OK",
+    )
+    SNComment.objects.create(pcs_no=pcs_no, comment="Test comment", created_by="admin")
+
+    summary = report6_summary(pcs_no)
+    assert summary is not None
+    assert summary["pcs_no"] == pcs_no
+    assert summary["lot_number"] == "LOT-DONE"
+    assert summary["production_spec"] == "SPEC-DONE"
+    assert summary["assembly_start"] == dt_start
+    assert summary["assembly_end"] == dt_end
+    assert summary["completed"] is True
+    assert summary["last_station"] == ""
+    assert summary["last_station_date"] is None
+    assert summary["comment"] == "Test comment"
+
+
+@pytest.mark.django_db
+def test_report6_summary_not_completed():
+    """Summary: SN не прошёл станцию 130 с OK → completed=False, last station shown."""
+    pcs_no = "SN-REPORT6-SUMMARY-NO"
+    dt_start = timezone.make_aware(datetime(2026, 9, 15, 10, 0, 0))
+    dt_mid = timezone.make_aware(datetime(2026, 9, 15, 11, 0, 0))
+
+    ProductionRecord.objects.create(
+        lot_number="LOT-NO", production_spec="SPEC-NO", subop_no=10,
+        pcs_no=pcs_no, created_date=dt_start, result="OK",
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT-NO", production_spec="SPEC-NO", subop_no=50,
+        pcs_no=pcs_no, created_date=dt_mid, result="OK",
+    )
+
+    summary = report6_summary(pcs_no)
+    assert summary is not None
+    assert summary["completed"] is False
+    assert summary["assembly_end"] is None
+    assert summary["assembly_start"] == dt_start
+    assert summary["last_station"]  # имя последней станции
+    assert summary["last_station_date"] == dt_mid
+    assert summary["last_station_status"] == "OK"
+
+
+@pytest.mark.django_db
+def test_report6_summary_not_completed_last_ng():
+    """Summary: last station has NG status → completed=False, last_station_status='NG'."""
+    pcs_no = "SN-REPORT6-SUMMARY-NG"
+    dt_start = timezone.make_aware(datetime(2026, 9, 15, 10, 0, 0))
+    dt_mid = timezone.make_aware(datetime(2026, 9, 15, 11, 0, 0))
+
+    ProductionRecord.objects.create(
+        lot_number="LOT-NG", production_spec="SPEC-NG", subop_no=10,
+        pcs_no=pcs_no, created_date=dt_start, result="OK",
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT-NG", production_spec="SPEC-NG", subop_no=50,
+        pcs_no=pcs_no, created_date=dt_mid, result="NG",
+    )
+
+    summary = report6_summary(pcs_no)
+    assert summary is not None
+    assert summary["completed"] is False
+    assert summary["last_station"]  # имя последней станции
+    assert summary["last_station_date"] == dt_mid
+    assert summary["last_station_status"] == "NG"
+
+
+@pytest.mark.django_db
+def test_report6_summary_double_passes():
+    """Summary: stations passed more than 2 times → double_passes field."""
+    pcs_no = "SN-REPORT6-DOUBLE"
+    dt_base = timezone.make_aware(datetime(2026, 9, 15, 10, 0, 0))
+
+    ProductionRecord.objects.create(
+        lot_number="LOT-DP", production_spec="SPEC-DP", subop_no=10,
+        pcs_no=pcs_no, created_date=dt_base, result="OK",
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT-DP", production_spec="SPEC-DP", subop_no=20,
+        pcs_no=pcs_no, created_date=timezone.make_aware(datetime(2026, 9, 15, 11, 0, 0)), result="OK",
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT-DP", production_spec="SPEC-DP", subop_no=20,
+        pcs_no=pcs_no, created_date=timezone.make_aware(datetime(2026, 9, 15, 12, 0, 0)), result="NG",
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT-DP", production_spec="SPEC-DP", subop_no=20,
+        pcs_no=pcs_no, created_date=timezone.make_aware(datetime(2026, 9, 15, 13, 0, 0)), result="OK",
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT-DP", production_spec="SPEC-DP", subop_no=50,
+        pcs_no=pcs_no, created_date=timezone.make_aware(datetime(2026, 9, 15, 14, 0, 0)), result="OK",
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT-DP", production_spec="SPEC-DP", subop_no=130,
+        pcs_no=pcs_no, created_date=timezone.make_aware(datetime(2026, 9, 15, 15, 0, 0)), result="OK",
+    )
+
+    summary = report6_summary(pcs_no)
+    assert summary is not None
+    assert summary["completed"] is True
+    assert "20 - 3" in summary["double_passes"]
+    assert "50 - 1" not in summary["double_passes"]
+
+
+@pytest.mark.django_db
+def test_report6_summary_missing():
+    """Summary: SN не найден → None."""
+    assert report6_summary("MISSING-SN") is None
+    assert report6_summary("") is None
+
+
+@pytest.mark.django_db
+def test_report6_view_context_and_recent_sns():
+    """Report6View: summary, recent_sns в контексте, Cache-Control: no-store."""
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        user, _ = User.objects.get_or_create(
+            username="testuser_report6_view", defaults={"password": "pass", "is_staff": True}
+        )
+        pcs_no = "SN-REPORT6-VIEW"
+        dt_start = timezone.make_aware(datetime(2026, 9, 15, 10, 0, 0))
+        ProductionRecord.objects.create(
+            lot_number="LOT-VIEW", production_spec="SPEC-VIEW", subop_no=10,
+            pcs_no=pcs_no, created_date=dt_start, result="OK",
+        )
+
+        client = Client()
+        client.force_login(user)
+
+        response = client.get(f"/reports/6/?pcs_no={pcs_no}")
+
+        assert response.status_code == 200
+        assert response["Cache-Control"] == "no-store"
+        response.render()
+        context = response.context_data
+        assert context["exists"] is True
+        assert context["summary"] is not None
+        assert context["summary"]["pcs_no"] == pcs_no
+        assert context["recent_sns"] == ["SN-REPORT6-VIEW"]
+        assert "Описание" in response.content.decode() or "report6DescriptionModal" in response.content.decode()
+        assert "Сводка" in response.content.decode()
+        assert "Последние просмотренные SN" in response.content.decode()
+        assert "Редактировать" in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_report6_view_recent_sns_tracking():
+    """Report6View: просмотр SN добавляет его в список recent_sns в сессии."""
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        user, _ = User.objects.get_or_create(
+            username="testuser_report6_recent", defaults={"password": "pass"}
+        )
+        pcs_no = "SN-REPORT6-RECENT"
+        dt_start = timezone.make_aware(datetime(2026, 9, 15, 10, 0, 0))
+        ProductionRecord.objects.create(
+            lot_number="LOT-RECENT", production_spec="SPEC-RECENT", subop_no=10,
+            pcs_no=pcs_no, created_date=dt_start, result="OK",
+        )
+
+        client = Client()
+        client.force_login(user)
+
+        response = client.get(f"/reports/6/?pcs_no={pcs_no}")
+        response.render()
+        assert response.context_data["recent_sns"] == ["SN-REPORT6-RECENT"]
 
 
 @pytest.mark.django_db

@@ -31,6 +31,7 @@ from reports.queries import (
     report4_defects,
     report5_repeated_passes,
     report6_serial_number,
+    report6_summary,
     report7_station130_output,
     report8_stations,
     report8_table_columns,
@@ -648,7 +649,7 @@ class SNCommentEditView(View):
                 comment.created_by = request.user.get_username()
             comment.save()
             messages.success(request, "Комментарий сохранен.")
-            return redirect("reports:report4")
+            return redirect(f"{reverse('reports:report6')}?pcs_no={pcs_no}")
         return render(
             request,
             self.template_name,
@@ -736,25 +737,66 @@ class Report5CommentFormView(View):
 # Отчет 6: Серийный номер
 # ========================
 
+REPORT6_DESCRIPTION = """\
+Отчёт «По SN» показывает прохождение сборочной линии конкретным серийным номером БУ.
+
+Для выбранного SN отображаются:
+  • сводка: SN, лот, спецификация, начало сборки (дата/время первой станции);
+  • окончание сборки: дата/время последнего прохождения станции 130 со статусом Ok;
+  • если сборка не завершена (нет прохода через станцию 130 с OK), ячейка окончания выделяется красным цветом, и отображается последняя станция с её статусом (OK или NG) и датой/временем;
+  • двойные проходы: станции, пройденные более двух раз (формат: номер станции — количество проходов);
+  • комментарий с возможностью редактирования (кнопка с иконкой ручки — доступна администраторам);
+  • основная таблица: все записи о прохождении станций в хронологическом порядке;
+  • в левой колонке: последние 50 просмотренных SN с первыми 15 символами комментария в виде ссылок.
+  • экспорт в Excel включает лист «Сводка» с основными данными и лист «Отчет по SN» с записями.
+"""
+
+
 class Report6View(TemplateView):
     template_name = "reports/report6.html"
 
     def get(self, request, *args, **kwargs):
         pcs_no = request.GET.get("pcs_no", "").strip()
-        data = report6_serial_number(pcs_no) if pcs_no else []
-        exists = ProductionRecord.objects.filter(pcs_no=pcs_no).exists() if pcs_no else None
+        recent_sns = list(request.session.get("report6_recent_sns", []))
+        recent_sns_comments = {}
+        if recent_sns:
+            recent_sns_comments = dict(
+                SNComment.objects.filter(pcs_no__in=recent_sns)
+                .values_list("pcs_no", "comment")
+            )
 
-        if pcs_no and not exists:
-            messages.error(request, f'Серийный номер "{pcs_no}" не найден в базе.')
+        data = []
+        summary = None
+        exists = None
+
+        if pcs_no:
+            exists = ProductionRecord.objects.filter(pcs_no=pcs_no).exists()
+            if exists:
+                data = report6_serial_number(pcs_no)
+                summary = report6_summary(pcs_no)
+
+                if pcs_no in recent_sns:
+                    recent_sns.remove(pcs_no)
+                recent_sns.insert(0, pcs_no)
+                recent_sns = recent_sns[:50]
+                request.session["report6_recent_sns"] = recent_sns
+            else:
+                messages.error(request, f'Серийный номер "{pcs_no}" не найден в базе.')
 
         sort_field, sort_dir = get_sort_params(request, "report6")
         if sort_field:
             data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report6"])
 
-        return self.render_to_response(self.get_context_data(
+        response = self.render_to_response(self.get_context_data(
             data=data, pcs_no=pcs_no, exists=exists,
+            summary=summary,
+            recent_sns=recent_sns,
+            recent_sns_comments=recent_sns_comments,
+            report6_description_lines=REPORT6_DESCRIPTION.strip().split("\n"),
             sort_field=sort_field, sort_dir=sort_dir,
         ))
+        response["Cache-Control"] = "no-store"
+        return response
 
 
 class Report7View(TemplateView):
@@ -1181,29 +1223,45 @@ class Report6ExportView(_ExcelExportBase):
         if pcs_no and not data:
             return redirect("reports:report6")
 
+        summary = report6_summary(pcs_no) if pcs_no else None
+
         sort_field, sort_dir = get_sort_params(request, "report6")
         if sort_field:
             data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report6"])
 
         wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "Отчет по SN"
+        summary_ws = wb.active
+        summary_ws.title = "Сводка"
+        summary_rows = [
+            ["SN", pcs_no],
+            ["Лот", summary["lot_number"] if summary else ""],
+            ["Спецификация", summary["production_spec"] if summary else ""],
+            ["Начало сборки", self._excel_value(summary["assembly_start"]) if summary else ""],
+            ["Окончание сборки", self._excel_value(summary["assembly_end"]) if summary and summary["completed"] else ""],
+            ["Статус", "Завершена" if summary and summary["completed"] else "Не завершена"],
+            ["Последняя станция", summary["last_station"] if summary and not summary["completed"] else ""],
+            ["Статус последней станции", summary["last_station_status"] if summary and not summary["completed"] else ""],
+            ["Комментарий", summary["comment"] if summary else ""],
+            ["Двойные проходы", summary["double_passes"] if summary else ""],
+        ]
+        for row_num, row in enumerate(summary_rows, 1):
+            summary_ws.cell(row_num, 1, row[0])
+            summary_ws.cell(row_num, 2, row[1])
+
+        ws = wb.create_sheet("Отчет по SN")
         headers = [
-            "PCSNo", "Lot no.", "Production spec.", "Subop no",
-            "WorkstationName", "CREATEDATE", "result", "testData", "Комментарий",
+            "PCSNo", "Subop no", "WorkstationName",
+            "CREATEDATE", "result", "testData",
         ]
         for col, header in enumerate(headers, 1):
             ws.cell(1, col, header)
         for row_num, d in enumerate(data, 2):
             ws.cell(row_num, 1, d["pcs_no"])
-            ws.cell(row_num, 2, d["lot_number"])
-            ws.cell(row_num, 3, d["production_spec"])
-            ws.cell(row_num, 4, d["subop_no"])
-            ws.cell(row_num, 5, d["workstation_name"])
-            ws.cell(row_num, 6, self._excel_value(d["created_date"]))
-            ws.cell(row_num, 7, d["result"])
-            ws.cell(row_num, 8, d["test_data"])
-            ws.cell(row_num, 9, d.get("comment", ""))
+            ws.cell(row_num, 2, d["subop_no"])
+            ws.cell(row_num, 3, d["workstation_name"])
+            ws.cell(row_num, 4, self._excel_value(d["created_date"]))
+            ws.cell(row_num, 5, d["result"])
+            ws.cell(row_num, 6, d["test_data"])
 
         return self._make_response(wb, f"report6_{pcs_no}.xlsx")
 
