@@ -33,7 +33,17 @@ class ExcelParseError(Exception):
     """Ошибка парсинга Excel файла."""
 
 
-REQUIRED_COLUMNS = ["Lot no.", "Subop no", "PCSNo", "CREATEDATE", "result"]
+REQUIRED_COLUMNS = [
+    "Lot no.",
+    "Production spec.",
+    "Subop no",
+    "subop name",
+    "PCSNo",
+    "CREATEDATE",
+    "result",
+    "testData",
+]
+EXPECTED_COLUMNS = REQUIRED_COLUMNS
 
 
 def parse_excel_file(file_path_or_buffer):

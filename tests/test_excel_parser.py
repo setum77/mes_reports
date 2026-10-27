@@ -77,11 +77,10 @@ def test_parse_missing_required_column():
         parse_excel_file(buf)
 
 
-def test_parse_partial_columns():
-    """Парсинг файла с упрощенным набором колонок (как table1.xlsx)."""
+def test_parse_missing_newly_required_column():
+    """Ошибка при отсутствии новых обязательных столбцов (subop name, testData)."""
     df_data = {
         "Lot no.": ["LOT-001"],
-        "Production No.": ["P1"],
         "Production spec.": ["SPEC"],
         "Subop no": [10],
         "PCSNo": ["PCS1"],
@@ -89,10 +88,28 @@ def test_parse_partial_columns():
         "result": ["OK"],
     }
     buf = make_excel(df_data)
+    with pytest.raises(ExcelParseError, match="testData|subop name"):
+        parse_excel_file(buf)
+
+
+def test_parse_partial_columns():
+    """Парсинг файла с упрощенным набором колонок (как table1.xlsx)."""
+    df_data = {
+        "Lot no.": ["LOT-001"],
+        "Production No.": ["P1"],
+        "Production spec.": ["SPEC"],
+        "Subop no": [10],
+        "subop name": ["Station 10"],
+        "PCSNo": ["PCS1"],
+        "CREATEDATE": [datetime(2026, 8, 13, 10, 0, 0)],
+        "result": ["OK"],
+        "testData": ["data"],
+    }
+    buf = make_excel(df_data)
     records = parse_excel_file(buf)
     assert len(records) == 1
     assert records[0].production_spec == "SPEC"
-    assert records[0].subop_name == ""
+    assert records[0].subop_name == "Station 10"
 
 
 @pytest.mark.django_db
