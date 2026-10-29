@@ -11,8 +11,7 @@
                     <img id="photoViewerImage"
                          src=""
                          alt=""
-                         style="max-width: 100%; max-height: 75vh; cursor: zoom-in;"
-                         id="photoViewerImg">
+                         style="max-width: 100%; max-height: 75vh; transform-origin: center;">
                     <div id="photoViewerCaption" class="text-white mt-2"></div>
                 </div>
                 <button type="button" class="btn btn-outline-light btn-sm position-absolute top-50 start-0 translate-middle-y ms-2"
@@ -22,6 +21,10 @@
                 <button type="button" class="btn btn-outline-light btn-sm position-absolute top-50 end-0 translate-middle-y me-2"
                         id="photoViewerNext" style="z-index: 1050;">
                     <i class="bi bi-chevron-right"></i>
+                </button>
+                <button type="button" class="btn btn-outline-light btn-sm position-absolute bottom-0 start-0 m-2"
+                        id="photoViewerHand" style="z-index: 1050;">
+                    <i class="bi bi-hand-index-thumb"></i>
                 </button>
                 <button type="button" class="btn btn-outline-light btn-sm position-absolute bottom-0 end-0 m-2"
                         id="photoViewerZoomOut" style="z-index: 1050;">

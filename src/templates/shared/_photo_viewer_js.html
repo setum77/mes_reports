@@ -3,6 +3,15 @@ var PhotoViewer = {
     photos: [],
     currentIndex: 0,
     scale: 1,
+    translateX: 0,
+    translateY: 0,
+    isPanMode: false,
+    isDragging: false,
+    dragStartX: 0,
+    dragStartY: 0,
+    startTx: 0,
+    startTy: 0,
+    isOpen: false,
     $modal: null,
     $img: null,
 
@@ -11,31 +20,61 @@ var PhotoViewer = {
         this.$modal = new bootstrap.Modal(document.getElementById('photoViewerModal'));
 
         var self = this;
-        document.getElementById('photoViewerPrev').addEventListener('click', function() { self.prev(); });
-        document.getElementById('photoViewerNext').addEventListener('click', function() { self.next(); });
-        document.getElementById('photoViewerZoomIn').addEventListener('click', function() { self.zoomIn(); });
-        document.getElementById('photoViewerZoomOut').addEventListener('click', function() { self.zoomOut(); });
+        var bind = function(id, fn) {
+            var el = document.getElementById(id);
+            if (el) el.addEventListener('click', fn);
+        };
+        bind('photoViewerPrev', function() { self.prev(); });
+        bind('photoViewerNext', function() { self.next(); });
+        bind('photoViewerZoomIn', function() { self.zoomIn(); });
+        bind('photoViewerZoomOut', function() { self.zoomOut(); });
+        bind('photoViewerHand', function() { self.togglePanMode(); });
 
-        document.getElementById('photoViewerModal').addEventListener('keydown', function(e) {
+        var keyHandler = function(e) {
             if (!self.isOpen) return;
             if (e.key === 'ArrowLeft') { self.prev(); e.preventDefault(); }
             if (e.key === 'ArrowRight') { self.next(); e.preventDefault(); }
             if (e.key === 'Escape') { self.close(); }
+        };
+        document.getElementById('photoViewerModal').addEventListener('keydown', keyHandler);
+        document.addEventListener('keydown', keyHandler);
+
+        // Mouse wheel zoom (at cursor position)
+        this.$img.addEventListener('wheel', function(e) {
+            if (!self.isOpen) return;
+            e.preventDefault();
+            var delta = -e.deltaY;
+            if (delta > 0) self.zoomAt(e.clientX, e.clientY, 1.2);
+            else self.zoomAt(e.clientX, e.clientY, 1 / 1.2);
+        }, { passive: false });
+
+        // Drag-to-pan (Hand tool)
+        this.$img.addEventListener('mousedown', function(e) {
+            if (!self.isOpen || !self.isPanMode) return;
+            e.preventDefault();
+            self.startDrag(e);
         });
-        document.addEventListener('keydown', function(e) {
-            if (!self.isOpen) return;
-            if (e.key === 'ArrowLeft') { self.prev(); e.preventDefault(); }
-            if (e.key === 'ArrowRight') { self.next(); e.preventDefault(); }
-            if (e.key === 'Escape') { self.close(); }
+        document.addEventListener('mousemove', function(e) {
+            if (self.isDragging) self.doDrag(e);
+        });
+        document.addEventListener('mouseup', function(e) {
+            if (self.isDragging) self.endDrag(e);
         });
     },
 
-    isOpen: false,
+    resetView: function() {
+        this.scale = 1;
+        this.translateX = 0;
+        this.translateY = 0;
+        this.isPanMode = false;
+        this.isDragging = false;
+        this.updateHandButton(false);
+    },
 
     open: function(photos, startIndex, pcsNo) {
         this.photos = photos || [];
         this.currentIndex = startIndex || 0;
-        this.scale = 1;
+        this.resetView();
         this.isOpen = true;
         this.render();
         this.$modal.show();
@@ -46,17 +85,107 @@ var PhotoViewer = {
         var photo = this.photos[this.currentIndex];
         var img = this.$img;
         img.src = photo.url;
-        img.style.transform = 'scale(' + this.scale + ')';
+        this.applyTransform();
+        this.updateCursor();
         var captionDiv = document.getElementById('photoViewerCaption');
         captionDiv.textContent = photo.caption || photo.filename || '';
         var counter = document.getElementById('photoViewerCounter');
         counter.textContent = (this.currentIndex + 1) + ' / ' + this.photos.length;
     },
 
+    applyTransform: function() {
+        this.$img.style.transform = 'translate(' + this.translateX + 'px, ' + this.translateY + 'px) scale(' + this.scale + ')';
+    },
+
+    updateCursor: function() {
+        var img = this.$img;
+        if (!this.isOpen) {
+            img.style.cursor = '';
+            return;
+        }
+        if (this.isDragging) {
+            img.style.cursor = 'grabbing';
+        } else if (this.isPanMode || this.scale > 1) {
+            img.style.cursor = 'grab';
+        } else {
+            img.style.cursor = 'zoom-in';
+        }
+    },
+
+    updateHandButton: function(active) {
+        var btn = document.getElementById('photoViewerHand');
+        if (btn) btn.classList.toggle('active', active);
+    },
+
+    togglePanMode: function() {
+        this.isPanMode = !this.isPanMode;
+        this.updateHandButton(this.isPanMode);
+        this.updateCursor();
+    },
+
+    onZoom: function() {
+        if (this.scale <= 1.0001) {
+            this.scale = 1;
+            this.translateX = 0;
+            this.translateY = 0;
+            this.isPanMode = false;
+        } else if (!this.isPanMode) {
+            this.isPanMode = true;
+        }
+        this.updateHandButton(this.isPanMode);
+        this.applyTransform();
+        this.updateCursor();
+    },
+
+    zoomIn: function() {
+        this.scale = Math.min(this.scale * 1.2, 3);
+        this.onZoom();
+    },
+
+    zoomOut: function() {
+        this.scale = Math.max(this.scale / 1.2, 1);
+        this.onZoom();
+    },
+
+    zoomAt: function(clientX, clientY, factor) {
+        var newScale = Math.min(Math.max(this.scale * factor, 1), 3);
+        if (Math.abs(newScale - this.scale) < 0.0001) return;
+        var ratio = newScale / this.scale;
+        var rect = this.$img.getBoundingClientRect();
+        var cx = rect.left + rect.width / 2;
+        var cy = rect.top + rect.height / 2;
+        this.translateX += (1 - ratio) * (clientX - cx);
+        this.translateY += (1 - ratio) * (clientY - cy);
+        this.scale = newScale;
+        this.onZoom();
+    },
+
+    startDrag: function(e) {
+        this.isDragging = true;
+        this.dragStartX = e.clientX;
+        this.dragStartY = e.clientY;
+        this.startTx = this.translateX;
+        this.startTy = this.translateY;
+        this.updateCursor();
+    },
+
+    doDrag: function(e) {
+        var dx = e.clientX - this.dragStartX;
+        var dy = e.clientY - this.dragStartY;
+        this.translateX = this.startTx + dx;
+        this.translateY = this.startTy + dy;
+        this.applyTransform();
+    },
+
+    endDrag: function(e) {
+        this.isDragging = false;
+        this.updateCursor();
+    },
+
     prev: function() {
         if (this.currentIndex > 0) {
             this.currentIndex--;
-            this.scale = 1;
+            this.resetView();
             this.render();
         }
     },
@@ -64,24 +193,15 @@ var PhotoViewer = {
     next: function() {
         if (this.currentIndex < this.photos.length - 1) {
             this.currentIndex++;
-            this.scale = 1;
+            this.resetView();
             this.render();
         }
-    },
-
-    zoomIn: function() {
-        this.scale = Math.min(this.scale * 1.2, 3);
-        this.$img.style.transform = 'scale(' + this.scale + ')';
-    },
-
-    zoomOut: function() {
-        this.scale = Math.max(this.scale / 1.2, 1);
-        this.$img.style.transform = 'scale(' + this.scale + ')';
     },
 
     close: function() {
         this.isOpen = false;
         this.$modal.hide();
+        this.updateCursor();
     },
 };
 
