@@ -25,4 +25,8 @@ urlpatterns = [
     path("defect/add/", views.ManualDefectCreateView.as_view(), name="defect_add"),
     path("comment/<str:pcs_no>/edit/", views.SNCommentEditView.as_view(), name="sn_comment_edit"),
     path("report5/comment/", views.Report5CommentFormView.as_view(), name="report5_comment"),
+    path("comment/<str:pcs_no>/defect/", views.SNSetDefectView.as_view(), name="sn_defect"),
+    path("sn/<str:pcs_no>/photo/upload/", views.SNPhotoUploadView.as_view(), name="sn_photo_upload"),
+    path("photo/<int:pk>/rename/", views.SNPhotoRenameView.as_view(), name="sn_photo_rename"),
+    path("photo/<int:pk>/delete/", views.SNPhotoDeleteView.as_view(), name="sn_photo_delete"),
 ]

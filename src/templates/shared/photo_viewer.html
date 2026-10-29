@@ -1,0 +1,42 @@
+{% load static %}
+<div class="modal fade" id="photoViewerModal" tabindex="-1" aria-labelledby="photoViewerLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-xl">
+        <div class="modal-content bg-transparent border-0">
+            <div class="modal-header bg-transparent border-0">
+                <h5 class="modal-title text-white" id="photoViewerLabel">Просмотр фотографий</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+            </div>
+            <div class="modal-body bg-transparent border-0 p-0 position-relative">
+                <div id="photoViewerContainer" style="text-align: center;">
+                    <img id="photoViewerImage"
+                         src=""
+                         alt=""
+                         style="max-width: 100%; max-height: 75vh; cursor: zoom-in;"
+                         id="photoViewerImg">
+                    <div id="photoViewerCaption" class="text-white mt-2"></div>
+                </div>
+                <button type="button" class="btn btn-outline-light btn-sm position-absolute top-50 start-0 translate-middle-y ms-2"
+                        id="photoViewerPrev" style="z-index: 1050;">
+                    <i class="bi bi-chevron-left"></i>
+                </button>
+                <button type="button" class="btn btn-outline-light btn-sm position-absolute top-50 end-0 translate-middle-y me-2"
+                        id="photoViewerNext" style="z-index: 1050;">
+                    <i class="bi bi-chevron-right"></i>
+                </button>
+                <button type="button" class="btn btn-outline-light btn-sm position-absolute bottom-0 end-0 m-2"
+                        id="photoViewerZoomOut" style="z-index: 1050;">
+                    <i class="bi bi-zoom-out"></i>
+                </button>
+                <button type="button" class="btn btn-outline-light btn-sm position-absolute bottom-0 end-0 m-2 me-5"
+                        id="photoViewerZoomIn" style="z-index: 1050;">
+                    <i class="bi bi-zoom-in"></i>
+                </button>
+            </div>
+            <div class="modal-footer bg-transparent border-0">
+                <div class="text-white small">
+                    <span id="photoViewerCounter"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

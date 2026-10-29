@@ -467,13 +467,17 @@ def _report4_last_ok_rows(pcs_numbers):
         }
 
 
-def report4_defects(start_date=None, end_date=None, limit=None):
+def report4_defects(start_date=None, end_date=None, defect_filter='defect', limit=None):
     """
     Отчет 4: Брак.
-    BU прошедшие 010 с OK, но не прошедшие 130 с OK + ручные браки.
+
+    defect_filter:
+      'defect'      — записи с defect=True на ProductionRecord + ручные браки (ManualDefect).
+      'in_progress' — SN прошли 010 с OK, но не прошли 130 с OK + ручные браки.
+
     limit: если задан, ограничивает количество записей (для "последних N").
     """
-    from production.models import ManualDefect, SNComment
+    from production.models import ManualDefect, SNComment, SNPhoto
 
     params = []
     date_clause = ""
@@ -485,43 +489,74 @@ def report4_defects(start_date=None, end_date=None, limit=None):
     if limit:
         params.append(limit)
 
-    sql = f"""
-        SELECT
-            p.pcs_no,
-            p.production_spec,
-            p.lot_number,
-            p.entry_date
-        FROM (
+    if defect_filter == 'defect':
+        sql = f"""
             SELECT
-                r.pcs_no,
-                r.production_spec,
-                r.lot_number,
-                MIN(r.created_date) AS entry_date
-            FROM production_productionrecord AS r
-            WHERE r.subop_no = {STATION_FOL_START}
-              AND UPPER(TRIM(COALESCE(r.result, ''))) = 'OK'
-              {date_clause}
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM production_productionrecord AS completed
-                  WHERE completed.pcs_no = r.pcs_no
-                    AND completed.subop_no = {STATION_BOL_END}
-                    AND UPPER(TRIM(COALESCE(completed.result, ''))) = 'OK'
-              )
-            GROUP BY r.pcs_no, r.production_spec, r.lot_number
-        ) AS p
-        ORDER BY p.entry_date DESC
-        {limit_clause}
-    """
+                p.pcs_no,
+                p.production_spec,
+                p.lot_number,
+                p.entry_date
+            FROM (
+                SELECT
+                    r.pcs_no,
+                    r.production_spec,
+                    r.lot_number,
+                    MIN(r.created_date) AS entry_date
+                FROM production_productionrecord AS r
+                WHERE r.defect = TRUE
+                  {date_clause}
+                GROUP BY r.pcs_no, r.production_spec, r.lot_number
+            ) AS p
+            ORDER BY p.entry_date DESC
+            {limit_clause}
+        """
+    else:
+        sql = f"""
+            SELECT
+                p.pcs_no,
+                p.production_spec,
+                p.lot_number,
+                p.entry_date
+            FROM (
+                SELECT
+                    r.pcs_no,
+                    r.production_spec,
+                    r.lot_number,
+                    MIN(r.created_date) AS entry_date
+                FROM production_productionrecord AS r
+                WHERE r.subop_no = {STATION_FOL_START}
+                  AND UPPER(TRIM(COALESCE(r.result, ''))) = 'OK'
+                  {date_clause}
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM production_productionrecord AS completed
+                      WHERE completed.pcs_no = r.pcs_no
+                        AND completed.subop_no = {STATION_BOL_END}
+                        AND UPPER(TRIM(COALESCE(completed.result, ''))) = 'OK'
+                  )
+                GROUP BY r.pcs_no, r.production_spec, r.lot_number
+            ) AS p
+            ORDER BY p.entry_date DESC
+            {limit_clause}
+        """
     with connection.cursor() as cursor:
         cursor.execute(sql, params)
         rows = dictfetchall(cursor)
 
-    manual_defects = ManualDefect.objects.all().order_by("-created_at")[:50]
+    manual_defects = ManualDefect.objects.all()
+    if start_date and end_date:
+        manual_defects = manual_defects.filter(
+            entry_date__date__gte=start_date,
+            entry_date__date__lte=end_date,
+        )
+    manual_defects = manual_defects.order_by("-created_at")[:50]
     manual_data = []
-    manual_comments = {}
+    seen_manual_keys = set()
     for md in manual_defects:
-        manual_comments[md.pcs_no] = md.comment
+        manual_key = (md.pcs_no, md.lot_number or "")
+        if manual_key in seen_manual_keys:
+            continue
+        seen_manual_keys.add(manual_key)
         manual_data.append({
             "pcs_no": md.pcs_no,
             "production_spec": md.production_spec or "",
@@ -546,6 +581,17 @@ def report4_defects(start_date=None, end_date=None, limit=None):
         }
     last_ok_by_pcs = _report4_last_ok_rows(pcs_numbers)
 
+    photos_map = {}
+    if pcs_numbers:
+        photos = SNPhoto.objects.filter(pcs_no__in=pcs_numbers).order_by("pcs_no", "uploaded_at")
+        for photo in photos:
+            photos_map.setdefault(photo.pcs_no, []).append({
+                "url": photo.image.url,
+                "filename": photo.image.name.split('/')[-1] if photo.image.name else "",
+                "caption": photo.caption or "",
+                "id": photo.id,
+            })
+
     for row in rows:
         last_ok = last_ok_by_pcs.get(row["pcs_no"], {})
         row["last_ok_station"] = last_ok.get("last_ok_station")
@@ -556,6 +602,7 @@ def report4_defects(start_date=None, end_date=None, limit=None):
         row["last_station_date"] = row["last_ok_at"]
         row["is_manual"] = False
         row["comment"] = comments.get(row["pcs_no"], "")
+        row["photos"] = photos_map.get(row["pcs_no"], [])
 
     for row in manual_data:
         last_ok = last_ok_by_pcs.get(row["pcs_no"], {})
@@ -566,6 +613,7 @@ def report4_defects(start_date=None, end_date=None, limit=None):
         )
         row["last_station_date"] = row["last_ok_at"]
         row["comment"] = comments.get(row["pcs_no"], row.get("comment", ""))
+        row["photos"] = photos_map.get(row["pcs_no"], [])
 
     return rows + manual_data
 
@@ -674,7 +722,12 @@ def report6_summary(pcs_no):
     Возвращает словарь с:
       pcs_no, lot_number, production_spec, assembly_start,
       assembly_end, completed, last_station, last_station_date,
-      last_station_status, comment, double_passes.
+      last_station_status, comment, double_passes, defect, photos.
+
+    defect — True, если любая запись ProductionRecord для данного pcs_no имеет
+    установленный брак (defect=True). Устанавливается администратором.
+
+    photos — список фотографий SNPhoto для данного pcs_no (для просмотра в сводке).
 
     double_passes — станции, пройденные более 2 раз (формат: "20 - 3, 70 - 2").
 
@@ -686,7 +739,7 @@ def report6_summary(pcs_no):
     if not pcs_no:
         return None
 
-    from production.models import ProductionRecord, SNComment
+    from production.models import ProductionRecord, SNComment, SNPhoto
 
     records = list(
         ProductionRecord.objects.filter(pcs_no=pcs_no).order_by("created_date", "id")
@@ -718,6 +771,17 @@ def report6_summary(pcs_no):
         f"{sn} - {count}" for sn, count in sorted(subop_counts.items()) if count > 2
     )
 
+    defect = any(r.defect for r in records)
+
+    photos = []
+    for photo in SNPhoto.objects.filter(pcs_no=pcs_no).order_by("uploaded_at"):
+        photos.append({
+            "url": photo.image.url,
+            "filename": photo.image.name.split('/')[-1] if photo.image.name else "",
+            "caption": photo.caption or "",
+            "id": photo.id,
+        })
+
     if end_record:
         return {
             "pcs_no": pcs_no,
@@ -730,6 +794,8 @@ def report6_summary(pcs_no):
             "last_station_date": None,
             "comment": comment,
             "double_passes": double_passes,
+            "defect": defect,
+            "photos": photos,
         }
 
     last_record = records[-1]
@@ -750,6 +816,8 @@ def report6_summary(pcs_no):
         "last_station_status": (last_record.result or "").upper(),
         "comment": comment,
         "double_passes": double_passes,
+        "defect": defect,
+        "photos": photos,
     }
 
 

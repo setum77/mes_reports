@@ -3,10 +3,17 @@
 
 {% block title %}Отчет 4: Брак{% endblock %}
 
+{% block extra_css %}
+<style>
+    .table-danger td { background-color: #fff5f5; }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h1 class="h3 mb-0">Отчет по браку</h1>
     <div>
+        <button type="button" class="btn btn-outline-info btn-sm me-2" data-bs-toggle="modal" data-bs-target="#report4DescriptionModal">Описание отчёта</button>
         {% if user.is_staff %}
         <a href="{% url 'reports:defect_add' %}" class="btn btn-outline-danger">Добавить брак вручную</a>
         {% endif %}
@@ -18,7 +25,7 @@
     <form method="get" class="row g-3 align-items-end">
         <div class="col-auto">
             <label class="form-label">Фильтр</label>
-            <select name="filter" class="form-select form-select-sm" onchange="toggleLot(this.value)">
+            <select name="filter" class="form-select form-select-sm" onchange="toggleReport4Fields(this.value)">
                 <option value="30d" {% if filter_type == '30d' %}selected{% endif %}>Последние 30 дней</option>
                 <option value="month" {% if filter_type == 'month' %}selected{% endif %}>Текущий месяц</option>
                 <option value="90d" {% if filter_type == '90d' %}selected{% endif %}>Последние 90 дней</option>
@@ -38,6 +45,13 @@
             <input type="date" name="end" class="form-control form-control-sm" {% if end_date %}value="{{ end_date|date:'Y-m-d' }}"{% endif %}>
         </div>
         <div class="col-auto">
+            <label class="form-label">Тип выборки</label>
+            <select name="defect_filter" class="form-select form-select-sm">
+                <option value="defect" {% if defect_filter == 'defect' %}selected{% endif %}>Брак</option>
+                <option value="in_progress" {% if defect_filter == 'in_progress' %}selected{% endif %}>Не закончили производство</option>
+            </select>
+        </div>
+        <div class="col-auto">
             <button type="submit" class="btn btn-primary btn-sm">Обновить</button>
         </div>
     </form>
@@ -54,11 +68,13 @@
                 <th>{% sort_link "entry_date" "Дата поступления в производство" %}</th>
                 <th>{% sort_link "last_station" "Последняя станция" %}</th>
                 <th>{% sort_link "last_station_date" "Дата прохождения последней станции" %}</th>
+                <th>Фото</th>
                 <th>{% sort_link "comment" "Комментарий" %}</th>
             </tr>
         </thead>
         <tbody>
             {% for row in data %}
+            {% if not row.is_manual %}
             <tr>
                 <td>{{ forloop.counter }}</td>
                 <td class="font-monospace">
@@ -69,6 +85,21 @@
                 <td class="small text-nowrap">{% if row.entry_date %}{{ row.entry_date|date:"Y-m-d H:i" }}{% endif %}</td>
                 <td>{{ row.last_station|default:'' }}</td>
                 <td class="small text-nowrap">{% if row.last_station_date %}{{ row.last_station_date|date:"Y-m-d H:i:s" }}{% endif %}</td>
+                <td class="small text-nowrap">
+                    {% if row.photos %}
+                    <div class="d-flex flex-column">
+                        {% for photo in row.photos %}
+                        <a href="#" class="text-decoration-none open-photos-btn small py-1"
+                            data-photos="{{ row.photos|json_encode|escape }}"
+                            title="Просмотр фотографий">
+                            {{ photo.caption|default:photo.filename|truncatechars:40 }}
+                        </a>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <span class="text-muted small">—</span>
+                    {% endif %}
+                </td>
                 <td class="small">
                     {{ row.comment|default:'' }}
                     {% if user.is_staff %}
@@ -76,8 +107,34 @@
                     {% endif %}
                 </td>
             </tr>
+            {% else %}
+            <tr class="table-danger">
+                <td>{{ forloop.counter }}</td>
+                <td class="font-monospace">{{ row.pcs_no }}</td>
+                <td>{{ row.production_spec }}</td>
+                <td>{{ row.lot_number|default:'' }}</td>
+                <td class="small text-nowrap">{% if row.entry_date %}{{ row.entry_date|date:"Y-m-d H:i" }}{% endif %}</td>
+                <td colspan="2" class="text-center">ручной брак</td>
+                <td class="small text-nowrap">
+                    {% if row.photos %}
+                    <div class="d-flex flex-column">
+                        {% for photo in row.photos %}
+                        <a href="#" class="text-decoration-none open-photos-btn small py-1"
+                            data-photos="{{ row.photos|json_encode|escape }}"
+                            title="Просмотр фотографий">
+                            {{ photo.caption|default:photo.filename|truncatechars:40 }}
+                        </a>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <span class="text-muted small">—</span>
+                    {% endif %}
+                </td>
+                <td class="small">{{ row.comment|default:'' }}</td>
+            </tr>
+            {% endif %}
             {% empty %}
-            <tr><td colspan="8" class="text-center text-muted py-4">Нет данных</td></tr>
+            <tr><td colspan="9" class="text-center text-muted py-4">Нет данных</td></tr>
             {% endfor %}
         </tbody>
     </table>
@@ -88,16 +145,59 @@
     <span class="badge bg-danger">Всего SN в браке: {{ data|length }}</span>
 </div>
 
+{% if defect_filter == 'defect' %}
+<div class="alert alert-info mt-2 small">
+    Отображаются SN с пометкой «Defect» и вручную добавленные браки.
+    Переключите на «Не закончили производство» для просмотра SN, не завершивших сборку.
+</div>
+{% else %}
+<div class="alert alert-info mt-2 small">
+    Отображаются SN, прошедшие станцию 010 с OK, но не достигшие станции 130 с OK.
+</div>
+{% endif %}
+
+<!-- Description modal -->
+<div class="modal fade" id="report4DescriptionModal" tabindex="-1" aria-labelledby="report4DescriptionLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="report4DescriptionLabel">Описание отчёта «Брак»</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+            </div>
+            <div class="modal-body">
+                {% for line in report4_description_lines %}
+                <p class="mb-1">{{ line }}</p>
+                {% endfor %}
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Понятно</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% include 'shared/photo_viewer.html' %}
 {% endblock %}
+
 {% block extra_js %}
 <script>
-function toggleLot(val) {
+function toggleReport4Fields(val) {
     document.getElementById('lot-field').style.display = val === 'lot' ? 'block' : 'none';
     document.getElementById('period-start').style.display = val === 'period' ? 'block' : 'none';
     document.getElementById('period-end').style.display = val === 'period' ? 'block' : 'none';
 }
 document.addEventListener('DOMContentLoaded', function() {
-    toggleLot("{{ filter_type }}");
+    toggleReport4Fields("{{ filter_type }}");
+});
+
+document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.open-photos-btn');
+    if (btn) {
+        e.preventDefault();
+        var photos = JSON.parse(btn.dataset.photos);
+        PhotoViewer.open(photos, 0);
+    }
 });
 </script>
+{% include 'shared/_photo_viewer_js.html' %}
 {% endblock %}

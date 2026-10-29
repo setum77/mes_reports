@@ -22,7 +22,7 @@ from django.views import View
 from django.views.generic import TemplateView, CreateView, UpdateView
 
 from accounts.views import admin_required
-from production.models import LotInfo, ManualDefect, ProductionRecord, Report5Comment, SNComment
+from production.models import LotInfo, ManualDefect, ProductionRecord, Report5Comment, SNComment, SNPhoto
 from reports.queries import (
     _aggregate_monthly,
     get_date_range,
@@ -54,8 +54,7 @@ SORTABLE_FIELDS = {
                  "bol_hours", "bol_production", "bol_speed"],
     "report3": ["report_month", "fol_hours", "fol_production", "fol_speed",
                  "bol_hours", "bol_production", "bol_speed"],
-    "report4": ["pcs_no", "production_spec", "lot_number", "entry_date", "last_station", "last_station_date", "comment"],
-    "report5": ["pcs_no", "production_spec", "lot_number", "station", "dates", "comment"],
+    "report4": ["pcs_no", "production_spec", "lot_number", "entry_date", "last_station", "last_station_date", "comment"],    "report5": ["pcs_no", "production_spec", "lot_number", "station", "dates", "comment"],
     "report6": ["pcs_no", "lot_number", "production_spec", "subop_no", "workstation_name",
                 "created_date", "result", "test_data", "comment"],
      "report7": ["pcs_no", "lot_number", "production_spec", "created_date"],
@@ -563,11 +562,25 @@ class Report3View(TemplateView):
 # Отчет 4: Брак
 # ========================
 
+# ========================
+# Отчет 4: Брак
+# ========================
+
+REPORT4_DESCRIPTION = """\
+Отчёт «Брак» показывает блоки БУ с отметкой «Defect» (брак), выставленной администратором, а также вручную добавленные браки и серийные номера, не завершившие производку (прошли станцию 010 с OK, но не дошли до 130 с OK).
+
+Фильтры: период (Последние 30/90/180 дней, Месяц, Год, Произвольный период, По лоту) и тип выборки (Брак / Не закончили производство). По умолчанию: Последние 90 дней + Брак.
+
+Колонка «Photos» содержит список загруженных фотографий к серийному номеру. Имена файлов — ссылки для просмотра во всплывающем просмотрщике с возможностью перелистывания и масштабирования.
+"""
+
+
 class Report4View(TemplateView):
     template_name = "reports/report4.html"
 
     def get(self, request, *args, **kwargs):
-        filter_type = request.GET.get("filter", "30d")
+        filter_type = request.GET.get("filter", "90d")
+        defect_filter = request.GET.get("defect_filter", "defect")
         lot_filter = request.GET.get("lot", "")
 
         if filter_type == "period":
@@ -577,7 +590,7 @@ class Report4View(TemplateView):
                 start_date = datetime.strptime(s, "%Y-%m-%d").date()
                 end_date = datetime.strptime(e, "%Y-%m-%d").date()
             else:
-                start_date, end_date = get_date_range("30d")
+                start_date, end_date = get_date_range("90d")
         elif filter_type == "lot":
             start_date, end_date = None, None
         else:
@@ -585,7 +598,7 @@ class Report4View(TemplateView):
 
         sort_field, sort_dir = get_sort_params(request, "report4")
         limit = 30 if not lot_filter and not sort_field and filter_type == "30d" else None
-        data = report4_defects(start_date, end_date, limit=limit)
+        data = report4_defects(start_date, end_date, defect_filter=defect_filter, limit=limit)
 
         if lot_filter:
             data = [d for d in data if lot_filter.lower() in (d.get("lot_number") or "").lower()]
@@ -593,10 +606,14 @@ class Report4View(TemplateView):
         if sort_field:
             data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report4"])
 
-        return self.render_to_response(self.get_context_data(
+        response = self.render_to_response(self.get_context_data(
             data=data, filter_type=filter_type, start_date=start_date, end_date=end_date,
-            lot_filter=lot_filter, sort_field=sort_field, sort_dir=sort_dir,
+            lot_filter=lot_filter, defect_filter=defect_filter,
+            sort_field=sort_field, sort_dir=sort_dir,
+            report4_description_lines=REPORT4_DESCRIPTION.strip().split("\n"),
         ))
+        response["Cache-Control"] = "no-store"
+        return response
 
 
 @method_decorator(admin_required, name="dispatch")
@@ -745,11 +762,92 @@ REPORT6_DESCRIPTION = """\
   • окончание сборки: дата/время последнего прохождения станции 130 со статусом Ok;
   • если сборка не завершена (нет прохода через станцию 130 с OK), ячейка окончания выделяется красным цветом, и отображается последняя станция с её статусом (OK или NG) и датой/временем;
   • двойные проходы: станции, пройденные более двух раз (формат: номер станции — количество проходов);
+  • Defect — брак, устанавливаемый администратором (редактируется только для staff);
+  • Фотографии — загрузка, просмотр, переименование и удаление фото к SN (только для администраторов);
   • комментарий с возможностью редактирования (кнопка с иконкой ручки — доступна администраторам);
   • основная таблица: все записи о прохождении станций в хронологическом порядке;
   • в левой колонке: последние 50 просмотренных SN с первыми 15 символами комментария в виде ссылок.
   • экспорт в Excel включает лист «Сводка» с основными данными и лист «Отчет по SN» с записями.
 """
+
+
+class SNSetDefectView(View):
+    """Установка/снятие флага Defect для всех записей ProductionRecord данного pcs_no (admin only)."""
+
+    def post(self, request, pcs_no):
+        if not request.user.is_staff:
+            return redirect("reports:report6")
+        value = request.POST.get("value", "").lower() in ("1", "true", "on", "yes")
+        updated = ProductionRecord.objects.filter(pcs_no=pcs_no).update(defect=value)
+        if updated:
+            messages.success(
+                request,
+                f"Defect установлен в {'True' if value else 'False'} для {updated} записей SN {pcs_no}."
+            )
+        else:
+            messages.warning(request, f"Не найдено записей для SN {pcs_no}.")
+        return redirect(f"{reverse('reports:report6')}?pcs_no={pcs_no}")
+
+
+class SNPhotoForm(forms.Form):
+    image = forms.FileField(label="Фотография")
+    caption = forms.CharField(label="Подпись / имя", max_length=255, required=False)
+
+
+class SNPhotoUploadView(View):
+    """Загрузка новой фотографии для pcs_no (admin only)."""
+
+    def post(self, request, pcs_no):
+        if not request.user.is_staff:
+            return redirect("reports:report6")
+        form = SNPhotoForm(request.POST, request.FILES)
+        if form.is_valid():
+            SNPhoto.objects.create(
+                pcs_no=pcs_no,
+                image=form.cleaned_data["image"],
+                caption=form.cleaned_data["caption"],
+                uploaded_by=getattr(request.user, "username", "admin"),
+            )
+            messages.success(request, "Фотография загружена.")
+        else:
+            messages.error(request, "Ошибка загрузки фотографии.")
+        return redirect(f"{reverse('reports:report6')}?pcs_no={pcs_no}")
+
+
+class SNPhotoRenameView(View):
+    """Переименование подписи фотографии (admin only)."""
+
+    def post(self, request, pk):
+        if not request.user.is_staff:
+            return redirect("reports:report6")
+        caption = request.POST.get("caption", "")
+        try:
+            photo = SNPhoto.objects.get(pk=pk)
+            photo.caption = caption
+            photo.save()
+            messages.success(request, "Подпись обновлена.")
+        except SNPhoto.DoesNotExist:
+            messages.error(request, "Фотография не найдена.")
+            return redirect("reports:report6")
+        return redirect(f"{reverse('reports:report6')}?pcs_no={photo.pcs_no}")
+
+
+class SNPhotoDeleteView(View):
+    """Удаление фотографии (admin only)."""
+
+    def post(self, request, pk):
+        if not request.user.is_staff:
+            return redirect("reports:report6")
+        try:
+            photo = SNPhoto.objects.get(pk=pk)
+            pcs_no = photo.pcs_no
+            photo.image.delete(save=False)
+            photo.delete()
+            messages.success(request, "Фотография удалена.")
+        except SNPhoto.DoesNotExist:
+            messages.error(request, "Фотография не найдена.")
+            return redirect("reports:report6")
+        return redirect(f"{reverse('reports:report6')}?pcs_no={pcs_no}")
 
 
 class Report6View(TemplateView):
@@ -1123,7 +1221,8 @@ class Report3ExportView(Report2ExportView):
 
 class Report4ExportView(_ExcelExportBase):
     def get(self, request):
-        filter_type = request.GET.get("filter", "30d")
+        filter_type = request.GET.get("filter", "90d")
+        defect_filter = request.GET.get("defect_filter", "defect")
         lot_filter = request.GET.get("lot", "")
 
         if filter_type == "period":
@@ -1133,7 +1232,7 @@ class Report4ExportView(_ExcelExportBase):
                 start_date = datetime.strptime(s, "%Y-%m-%d").date()
                 end_date = datetime.strptime(e, "%Y-%m-%d").date()
             else:
-                start_date, end_date = get_date_range("30d")
+                start_date, end_date = get_date_range("90d")
         elif filter_type == "lot":
             start_date, end_date = None, None
         else:
@@ -1141,7 +1240,7 @@ class Report4ExportView(_ExcelExportBase):
 
         sort_field, sort_dir = get_sort_params(request, "report4")
         limit = 30 if not lot_filter and not sort_field and filter_type == "30d" else None
-        data = report4_defects(start_date, end_date, limit=limit)
+        data = report4_defects(start_date, end_date, defect_filter=defect_filter, limit=limit)
         if lot_filter:
             data = [d for d in data if lot_filter.lower() in (d.get("lot_number") or "").lower()]
 

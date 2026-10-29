@@ -10,6 +10,7 @@
     .summary-ok { background-color: #d4edda; }
     .summary-error { background-color: #f8d7da; }
     .summary-label { width: 140px; }
+    .photo-thumb { max-width: 60px; max-height: 60px; object-fit: cover; }
 </style>
 {% endblock %}
 
@@ -113,6 +114,70 @@
                         <div class="col-sm-5 col-md summary-label text-muted small">Двойные проходы</div>
                         <div class="col-sm-7 col-md">{{ summary.double_passes|default:'' }}</div>
                     </div>
+                    {% if user.is_staff %}
+                    <div class="row g-1 mt-2">
+                        <div class="col-sm-5 col-md summary-label text-muted small">Defect (брак)</div>
+                        <div class="col-sm-7 col-md d-flex align-items-center">
+                            <form method="post" action="{% url 'reports:sn_defect' summary.pcs_no %}" class="d-inline"
+                                  onsubmit="return confirm('Установить брак для SN {{ summary.pcs_no }}?')">
+                                {% csrf_token %}
+                                <button type="submit" name="value" value="true"
+                                        class="btn btn-outline-danger btn-sm"
+                                        {% if summary.defect %}style="display:none;"{% endif %}>
+                                    Установить брак
+                                </button>
+                                <button type="submit" name="value" value="false"
+                                        class="btn btn-outline-secondary btn-sm"
+                                        {% if not summary.defect %}style="display:none;"{% endif %}>
+                                    Снять брак
+                                </button>
+                            </form>
+                            {% if summary.defect %}
+                            <span class="badge bg-danger ms-2">Брак</span>
+                            {% else %}
+                            <span class="badge bg-secondary ms-2">Н/Б</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="row g-1 mt-2">
+                        <div class="col-sm-5 col-md summary-label text-muted small">Фотографии</div>
+                        <div class="col-sm-7 col-md">
+                            <button type="button" class="btn btn-outline-primary btn-sm" data-bs-toggle="modal"
+                                    data-bs-target="#snPhotoUploadModal">
+                                <i class="bi bi-plus"></i> Добавить
+                            </button>
+                            {% if summary.photos %}
+                            <div class="mt-2">
+                                {% for photo in summary.photos %}
+                                <div class="d-flex align-items-center mb-1">
+                                    <a href="#" class="me-2 open-photos-btn"
+                                        data-photos="{{ summary.photos|json_encode|escape }}">
+                                        <img src="{{ photo.url }}" alt="{{ photo.caption|escape }}" class="photo-thumb">
+                                    </a>
+                                    <span class="small text-truncate me-2">{{ photo.caption|default:photo.filename|truncatechars:30 }}</span>
+                                    <form method="post" action="{% url 'reports:sn_photo_rename' photo.id %}" class="d-inline"
+                                          onsubmit="return promptRename(this, '{{ photo.caption|escapejs }}')">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-outline-secondary btn-sm py-0 px-1">
+                                            <i class="bi bi-pencil"></i>
+                                        </button>
+                                    </form>
+                                    <form method="post" action="{% url 'reports:sn_photo_delete' photo.id %}" class="d-inline ms-1"
+                                          onsubmit="return confirm('Удалить фотографию «{{ photo.caption|escapejs }}»?')">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-outline-danger btn-sm py-0 px-1">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </form>
+                                </div>
+                                {% endfor %}
+                            </div>
+                            {% else %}
+                            <span class="text-muted small">Нет фотографий</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endif %}
                 </div>
             </div>
         </div>
@@ -156,6 +221,37 @@
     </div>
 </div>
 
+<!-- Photo upload modal -->
+{% if user.is_staff and exists and summary %}
+<div class="modal fade" id="snPhotoUploadModal" tabindex="-1" aria-labelledby="snPhotoUploadLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="post" action="{% url 'reports:sn_photo_upload' summary.pcs_no %}" enctype="multipart/form-data">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="snPhotoUploadLabel">Добавить фотографию</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+                </div>
+                <div class="modal-body">
+                    {% csrf_token %}
+                    <div class="mb-3">
+                        <label for="id_image" class="form-label">Фотография</label>
+                        <input type="file" name="image" id="id_image" class="form-control" accept="image/*" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="id_caption" class="form-label">Подпись / имя</label>
+                        <input type="text" name="caption" id="id_caption" class="form-control" placeholder="Введите подпись" maxlength="255">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+                    <button type="submit" class="btn btn-primary">Загрузить</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <!-- Description modal -->
 <div class="modal fade" id="report6DescriptionModal" tabindex="-1" aria-labelledby="report6DescriptionLabel" aria-hidden="true">
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
@@ -175,4 +271,33 @@
         </div>
     </div>
 </div>
+
+{% include 'shared/photo_viewer.html' %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function promptRename(form, currentCaption) {
+    var newCaption = prompt("Новая подпись / имя:", currentCaption || "");
+    if (newCaption === null) {
+        return false;
+    }
+    var input = document.createElement("input");
+    input.type = "hidden";
+    input.name = "caption";
+    input.value = newCaption;
+    form.appendChild(input);
+    return true;
+}
+
+document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.open-photos-btn');
+    if (btn) {
+        e.preventDefault();
+        var photos = JSON.parse(btn.dataset.photos);
+        PhotoViewer.open(photos, 0);
+    }
+});
+</script>
+{% include 'shared/_photo_viewer_js.html' %}
 {% endblock %}

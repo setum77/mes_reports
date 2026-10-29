@@ -2,6 +2,7 @@ from django import template
 from django.utils.html import format_html
 from builtins import sum as _sum
 
+import json as _json
 
 register = template.Library()
 
@@ -144,3 +145,9 @@ def diff_class(value):
     if v == 0:
         return "diff-zero"
     return "diff-neg" if v < 0 else "diff-pos"
+
+
+@register.filter
+def json_encode(data):
+    """Кодирует данные в JSON-строку для использования в JavaScript."""
+    return _json.dumps(data)

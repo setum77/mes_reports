@@ -2,7 +2,7 @@ from django.contrib import admin
 
 from mes_report3.admin_site import mes_admin_site
 
-from .models import ProductionRecord, LotInfo, ManualDefect, SNComment, Report5Comment
+from .models import ProductionRecord, LotInfo, ManualDefect, SNComment, Report5Comment, SNPhoto
 
 
 class StaffBusinessModelAdmin(admin.ModelAdmin):
@@ -30,6 +30,7 @@ class ProductionRecordAdmin(StaffBusinessModelAdmin):
         "created_date",
         "result",
         "production_spec",
+        "defect",
     ]
     search_fields = ["pcs_no", "lot_number", "production_spec", "subop_no"]
     list_filter = ["result", "subop_no", "created_date"]
@@ -144,8 +145,23 @@ class Report5CommentAdmin(StaffBusinessModelAdmin):
         super().save_model(request, obj, form, change)
 
 
+class SNPhotoAdmin(StaffBusinessModelAdmin):
+    list_display = ["pcs_no", "caption", "image_tag", "uploaded_by", "uploaded_at"]
+    search_fields = ["pcs_no", "caption"]
+    list_filter = ["pcs_no", "uploaded_at", "uploaded_by"]
+    list_per_page = 50
+    readonly_fields = ["uploaded_by", "uploaded_at"]
+
+    def image_tag(self, obj):
+        if obj.image:
+            return f"[{obj.image.name}]"
+        return ""
+    image_tag.short_description = "Фото"
+
+
 mes_admin_site.register(ProductionRecord, ProductionRecordAdmin)
 mes_admin_site.register(LotInfo, LotInfoAdmin)
 mes_admin_site.register(ManualDefect, ManualDefectAdmin)
 mes_admin_site.register(SNComment, SNCommentAdmin)
 mes_admin_site.register(Report5Comment, Report5CommentAdmin)
+mes_admin_site.register(SNPhoto, SNPhotoAdmin)

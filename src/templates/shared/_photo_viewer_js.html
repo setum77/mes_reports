@@ -1,0 +1,92 @@
+<script>
+var PhotoViewer = {
+    photos: [],
+    currentIndex: 0,
+    scale: 1,
+    $modal: null,
+    $img: null,
+
+    init: function() {
+        this.$img = document.getElementById('photoViewerImage');
+        this.$modal = new bootstrap.Modal(document.getElementById('photoViewerModal'));
+
+        var self = this;
+        document.getElementById('photoViewerPrev').addEventListener('click', function() { self.prev(); });
+        document.getElementById('photoViewerNext').addEventListener('click', function() { self.next(); });
+        document.getElementById('photoViewerZoomIn').addEventListener('click', function() { self.zoomIn(); });
+        document.getElementById('photoViewerZoomOut').addEventListener('click', function() { self.zoomOut(); });
+
+        document.getElementById('photoViewerModal').addEventListener('keydown', function(e) {
+            if (!self.isOpen) return;
+            if (e.key === 'ArrowLeft') { self.prev(); e.preventDefault(); }
+            if (e.key === 'ArrowRight') { self.next(); e.preventDefault(); }
+            if (e.key === 'Escape') { self.close(); }
+        });
+        document.addEventListener('keydown', function(e) {
+            if (!self.isOpen) return;
+            if (e.key === 'ArrowLeft') { self.prev(); e.preventDefault(); }
+            if (e.key === 'ArrowRight') { self.next(); e.preventDefault(); }
+            if (e.key === 'Escape') { self.close(); }
+        });
+    },
+
+    isOpen: false,
+
+    open: function(photos, startIndex, pcsNo) {
+        this.photos = photos || [];
+        this.currentIndex = startIndex || 0;
+        this.scale = 1;
+        this.isOpen = true;
+        this.render();
+        this.$modal.show();
+    },
+
+    render: function() {
+        if (!this.photos.length) return;
+        var photo = this.photos[this.currentIndex];
+        var img = this.$img;
+        img.src = photo.url;
+        img.style.transform = 'scale(' + this.scale + ')';
+        var captionDiv = document.getElementById('photoViewerCaption');
+        captionDiv.textContent = photo.caption || photo.filename || '';
+        var counter = document.getElementById('photoViewerCounter');
+        counter.textContent = (this.currentIndex + 1) + ' / ' + this.photos.length;
+    },
+
+    prev: function() {
+        if (this.currentIndex > 0) {
+            this.currentIndex--;
+            this.scale = 1;
+            this.render();
+        }
+    },
+
+    next: function() {
+        if (this.currentIndex < this.photos.length - 1) {
+            this.currentIndex++;
+            this.scale = 1;
+            this.render();
+        }
+    },
+
+    zoomIn: function() {
+        this.scale = Math.min(this.scale * 1.2, 3);
+        this.$img.style.transform = 'scale(' + this.scale + ')';
+    },
+
+    zoomOut: function() {
+        this.scale = Math.max(this.scale / 1.2, 1);
+        this.$img.style.transform = 'scale(' + this.scale + ')';
+    },
+
+    close: function() {
+        this.isOpen = false;
+        this.$modal.hide();
+    },
+};
+
+window.PhotoViewer = PhotoViewer;
+document.addEventListener('DOMContentLoaded', function() {
+    PhotoViewer.init();
+});
+</script>

@@ -21,7 +21,7 @@ from openpyxl import load_workbook
 
 from mes_report3.admin_site import mes_admin_site
 from production.admin import LotInfoAdmin, ProductionRecordAdmin
-from production.models import LotInfo, ManualDefect, ProductionRecord, Report5Comment, SNComment
+from production.models import LotInfo, ManualDefect, ProductionRecord, Report5Comment, SNComment, SNPhoto
 from reports.queries import (
     report1_orders,
     report2_line_productivity,
@@ -207,7 +207,7 @@ def test_report4_last_ok_station_and_sn_comment():
     )
     SNComment.objects.create(pcs_no=pcs_no, comment="Отчёт 4", created_by="admin")
 
-    data = report4_defects(start, end)
+    data = report4_defects(start, end, defect_filter='in_progress')
     row = next(item for item in data if item["pcs_no"] == pcs_no)
 
     assert row["last_station"] == "PIN Test"
@@ -234,7 +234,126 @@ def test_report4_manual_comment_is_used_without_sn_comment():
 
 
 @pytest.mark.django_db
-def test_report6_includes_sn_comment():
+def test_report4_defect_filter_defect_true():
+    """defect_filter='defect': ProductionRecord с defect=True + ManualDefect."""
+    pcs_no = "SN-DEFECT-FLAG"
+    dt = timezone.make_aware(datetime(2026, 9, 1, 10, 0))
+    ProductionRecord.objects.create(
+        lot_number="LOT", subop_no=10, pcs_no=pcs_no,
+        created_date=dt, result="OK", defect=True,
+        production_spec="SPEC"
+    )
+    data = report4_defects(defect_filter="defect")
+    row = next((r for r in data if r["pcs_no"] == pcs_no), None)
+    assert row is not None
+    assert row["pcs_no"] == pcs_no
+
+
+@pytest.mark.django_db
+def test_report4_defect_filter_in_progress_excludes_defect_true():
+    """defect_filter='in_progress': только in_progress, не defect=True записи."""
+    pcs_no = "SN-INPROGRESS-OK"
+    dt_start = timezone.make_aware(datetime(2026, 9, 1, 8, 0))
+    dt_mid = timezone.make_aware(datetime(2026, 9, 1, 10, 0))
+    ProductionRecord.objects.create(
+        lot_number="LOT", subop_no=10, pcs_no=pcs_no,
+        created_date=dt_start, result="OK",
+        production_spec="SPEC"
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT", subop_no=50, pcs_no=pcs_no,
+        created_date=dt_mid, result="OK",
+        production_spec="SPEC"
+    )
+    data = report4_defects(defect_filter="in_progress")
+    row = next((r for r in data if r["pcs_no"] == pcs_no), None)
+    assert row is not None
+
+
+@pytest.mark.django_db
+def test_report4_defect_filter_both_include_manual_defect():
+    """defect и in_progress оба включают ManualDefect."""
+    pcs_no = "SN-MANUAL-BOTH"
+    ManualDefect.objects.create(
+        pcs_no=pcs_no, production_spec="SPEC", lot_number="LOT",
+        comment="Ручной", created_by="admin"
+    )
+    for defect_filter in ("defect", "in_progress"):
+        data = report4_defects(defect_filter=defect_filter)
+        row = next((r for r in data if r["pcs_no"] == pcs_no), None)
+        assert row is not None
+
+
+@pytest.mark.django_db
+def test_report4_defect_filter_in_progress_excludes_completed():
+    """defect_filter='in_progress' исключает завершенные SN (прошли 130 OK с defect=True)."""
+    pcs_no = "SN-FLAGGED-COMPLETED"
+    dt_start = timezone.make_aware(datetime(2026, 9, 1, 8, 0))
+    dt_end = timezone.make_aware(datetime(2026, 9, 1, 12, 0))
+    ProductionRecord.objects.create(
+        lot_number="LOT", subop_no=10, pcs_no=pcs_no,
+        created_date=dt_start, result="OK", defect=True,
+        production_spec="SPEC"
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT", subop_no=130, pcs_no=pcs_no,
+        created_date=dt_end, result="OK", defect=True,
+        production_spec="SPEC"
+    )
+    in_progress_data = report4_defects(defect_filter="in_progress")
+    assert not any(r["pcs_no"] == pcs_no for r in in_progress_data)
+    defect_data = report4_defects(defect_filter="defect")
+    assert any(r["pcs_no"] == pcs_no for r in defect_data)
+
+
+@pytest.mark.django_db
+def test_report4_view_cache_control_no_store():
+    """Report4View: Cache-Control: no-store."""
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        user, _ = User.objects.get_or_create(
+            username="testuser_report4_cache", defaults={"password": "pass", "is_staff": True}
+        )
+        dt = timezone.make_aware(datetime(2026, 9, 1, 10, 0))
+        ProductionRecord.objects.create(
+            lot_number="LOT", subop_no=10, pcs_no="SN-CACHE4",
+            created_date=dt, result="OK", defect=True,
+            production_spec="SPEC"
+        )
+        client = Client()
+        client.force_login(user)
+        response = client.get("/reports/4/")
+        assert response.status_code == 200
+        assert response["Cache-Control"] == "no-store"
+
+
+@pytest.mark.django_db
+def test_report4_view_description_lines():
+    """Report4View: report4_description_lines в контексте."""
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        user, _ = User.objects.get_or_create(
+            username="testuser_report4_desc", defaults={"password": "pass", "is_staff": False}
+        )
+        client = Client()
+        client.force_login(user)
+        response = client.get("/reports/4/")
+        response.render()
+        context = response.context_data
+        assert context["report4_description_lines"] is not None
+        assert len(context["report4_description_lines"]) > 0
+
+
+@pytest.mark.django_db
+def test_report4_view_default_filter_is_90d():
+    """Report4View: по умолчанию filter_type='90d'."""
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        user, _ = User.objects.get_or_create(
+            username="testuser_report4_default", defaults={"password": "pass", "is_staff": True}
+        )
+        client = Client()
+        client.force_login(user)
+        response = client.get("/reports/4/")
+        response.render()
+        assert response.context_data["filter_type"] == "90d"
     pcs_no = "SN-REPORT6-COMMENT"
     ProductionRecord.objects.create(
         lot_number="LOT-REPORT6",
@@ -249,6 +368,59 @@ def test_report6_includes_sn_comment():
     data = report6_serial_number(pcs_no)
 
     assert data[0]["comment"] == "SN-комментарий"
+
+
+@pytest.mark.django_db
+def test_report4_photos_shown_as_links_with_valid_data_attribute():
+    """Report4View: фото отображаются в виде списка ссылок с корректным data-photos (HTML-escaped JSON, not escapejs)."""
+    import html as _html
+    import json as _json
+
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        user, _ = User.objects.get_or_create(
+            username="testuser_report4_photos", defaults={"password": "pass", "is_staff": True}
+        )
+        client = Client()
+        client.force_login(user)
+
+        pcs_no = "SN-REPORT4-PHOTOS"
+        dt = timezone.make_aware(datetime(2026, 9, 1, 10, 0))
+        ProductionRecord.objects.create(
+            lot_number="LOT-PHOTO", subop_no=10, pcs_no=pcs_no,
+            created_date=dt, result="OK", defect=True,
+            production_spec="SPEC-PHOTO"
+        )
+        SNPhoto.objects.create(
+            pcs_no=pcs_no, image="sn_photos/2026/09/01/photo1.jpg",
+            caption="Первая фото", uploaded_by="admin",
+        )
+        SNPhoto.objects.create(
+            pcs_no=pcs_no, image="sn_photos/2026/09/01/photo2.jpg",
+            caption="Вторая фото", uploaded_by="admin",
+        )
+        response = client.get("/reports/4/")
+        response.render()
+        content = response.content.decode()
+
+        # Фото отображаются как ссылки с именами, а не как "Просмотр (2)"
+        assert "Просмотр (2)" not in content
+        assert "Первая фото" in content
+        assert "Вторая фото" in content
+
+        # data-photos содержит валидный HTML-escaped JSON (а не escapejs с \")
+        # Если бы использовался escapejs, в атрибуте были бы \" вместо HTML-сущностей.
+        assert 'data-photos="' in content
+        # Находим первое вхождение data-photos и извлекаем значение
+        idx = content.index('data-photos="')
+        start = idx + len('data-photos="')
+        end = content.index('"', start)
+        raw_photos_attr = content[start:end]
+        # Декодируем HTML-сущности (&#34; → ") и проверяем, что это валидный JSON
+        decoded = _html.unescape(raw_photos_attr)
+        photos_data = _json.loads(decoded)
+        assert len(photos_data) == 2
+        assert photos_data[0]["caption"] == "Первая фото"
+        assert photos_data[1]["caption"] == "Вторая фото"
 
 
 @pytest.mark.django_db
@@ -374,6 +546,150 @@ def test_report6_summary_missing():
     """Summary: SN не найден → None."""
     assert report6_summary("MISSING-SN") is None
     assert report6_summary("") is None
+
+
+@pytest.mark.django_db
+def test_report6_summary_includes_defect_and_photos():
+    """report6_summary: возвращает defect и photos поля."""
+    pcs_no = "SN-REPORT6-DEFECT-PHOTOS"
+    dt = timezone.make_aware(datetime(2026, 9, 15, 10, 0))
+    ProductionRecord.objects.create(
+        lot_number="LOT", production_spec="SPEC", subop_no=10,
+        pcs_no=pcs_no, created_date=dt, result="OK", defect=True,
+    )
+    summary = report6_summary(pcs_no)
+    assert summary is not None
+    assert "defect" in summary
+    assert summary["defect"] is True
+    assert "photos" in summary
+    assert isinstance(summary["photos"], list)
+
+
+@pytest.mark.django_db
+def test_report6_set_defect_view_admin_only():
+    """SNSetDefectView: только staff, устанавливает defect флаг."""
+    user = User.objects.create_user(
+        username="report6-editor", password="password", is_staff=True
+    )
+    pcs_no = "SN-SET-DEFECT"
+    dt = timezone.make_aware(datetime(2026, 9, 15, 10, 0))
+    ProductionRecord.objects.create(
+        lot_number="LOT", production_spec="SPEC", subop_no=10,
+        pcs_no=pcs_no, created_date=dt, result="OK",
+    )
+    client = Client()
+    client.force_login(user)
+    url = f"/reports/comment/{pcs_no}/defect/"
+    response = client.post(url, {"value": "true"})
+    assert response.status_code == 302
+    assert ProductionRecord.objects.filter(pcs_no=pcs_no, defect=True).exists()
+
+
+@pytest.mark.django_db
+def test_report6_set_defect_view_non_staff_redirect():
+    """SNSetDefectView: non-staff перенаправляется на report6."""
+    user = User.objects.create_user(
+        username="report6-nostaff", password="password", is_staff=False
+    )
+    pcs_no = "SN-NOSTAFF-DEFECT"
+    client = Client()
+    client.force_login(user)
+    url = f"/reports/comment/{pcs_no}/defect/"
+    response = client.post(url, {"value": "true"})
+    assert response.status_code == 302
+    assert "/reports/6/" in response.url
+
+
+@pytest.mark.django_db
+def test_report6_photo_upload_view_admin_only():
+    """SNPhotoUploadView: admin может загрузить фото."""
+    user = User.objects.create_user(
+        username="report6-photo-upload", password="password", is_staff=True
+    )
+    pcs_no = "SN-PHOTO-UPLOAD"
+    dt = timezone.make_aware(datetime(2026, 9, 15, 10, 0))
+    ProductionRecord.objects.create(
+        lot_number="LOT", production_spec="SPEC", subop_no=10,
+        pcs_no=pcs_no, created_date=dt, result="OK",
+    )
+    client = Client()
+    client.force_login(user)
+    url = f"/reports/sn/{pcs_no}/photo/upload/"
+    img_content = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+    img_file = (BytesIO(img_content), "test_photo.png")
+    response = client.post(url, {"image": img_file, "caption": "Test photo"}, follow=True)
+    assert response.status_code == 200
+    assert SNPhoto.objects.filter(pcs_no=pcs_no).count() == 1
+    assert SNPhoto.objects.get(pcs_no=pcs_no).caption == "Test photo"
+
+
+@pytest.mark.django_db
+def test_report6_photo_rename_view():
+    """SNPhotoRenameView: admin может переименовать подпись."""
+    user = User.objects.create_user(
+        username="report6-photo-rename", password="password", is_staff=True
+    )
+    pcs_no = "SN-PHOTO-RENAME"
+    photo = SNPhoto.objects.create(
+        pcs_no=pcs_no, image="test_image.png",
+        caption="Old caption", uploaded_by="admin",
+    )
+    client = Client()
+    client.force_login(user)
+    url = f"/reports/photo/{photo.pk}/rename/"
+    response = client.post(url, {"caption": "New caption"})
+    assert response.status_code == 302
+    photo.refresh_from_db()
+    assert photo.caption == "New caption"
+
+
+@pytest.mark.django_db
+def test_report6_photo_rename_view_not_found():
+    """SNPhotoRenameView: not found → redirect на report6 без ошибки."""
+    user = User.objects.create_user(
+        username="report6-photo-rename-nf", password="password", is_staff=True
+    )
+    client = Client()
+    client.force_login(user)
+    url = "/reports/photo/99999/rename/"
+    response = client.post(url, {"caption": "New caption"})
+    assert response.status_code == 302
+    assert "/reports/6/" in response.url
+
+
+@pytest.mark.django_db
+def test_report6_photo_delete_view():
+    """SNPhotoDeleteView: admin может удалить фото."""
+    user = User.objects.create_user(
+        username="report6-photo-delete", password="password", is_staff=True
+    )
+    pcs_no = "SN-PHOTO-DELETE"
+    photo = SNPhoto.objects.create(
+        pcs_no=pcs_no, image="test_image.png",
+        caption="To delete", uploaded_by="admin",
+    )
+    client = Client()
+    client.force_login(user)
+    url = f"/reports/photo/{photo.pk}/delete/"
+    response = client.post(url)
+    assert response.status_code == 302
+    assert not SNPhoto.objects.filter(pk=photo.pk).exists()
+
+
+@pytest.mark.django_db
+def test_report6_view_description_lines():
+    """Report6View: report6_description_lines в контексте."""
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        user, _ = User.objects.get_or_create(
+            username="testuser_report6_desc", defaults={"password": "pass", "is_staff": True}
+        )
+        client = Client()
+        client.force_login(user)
+        response = client.get("/reports/6/")
+        response.render()
+        context = response.context_data
+        assert context["report6_description_lines"] is not None
+        assert len(context["report6_description_lines"]) > 0
 
 
 @pytest.mark.django_db

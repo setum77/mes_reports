@@ -26,6 +26,7 @@ class ProductionRecord(models.Model):
     working_hours = models.IntegerField("Рабочие часы", blank=True, null=True)
     result = models.CharField("Результат", max_length=20, blank=True, null=True)
     test_data = models.TextField("Тестовые данные", blank=True, null=True)
+    defect = models.BooleanField("Defect — брак", default=False)
 
     class Meta:
         verbose_name = "Запись производства"
@@ -117,3 +118,25 @@ class Report5Comment(models.Model):
 
     def __str__(self):
         return f"{self.pcs_no} | станция {self.station_no}"
+
+
+class SNPhoto(models.Model):
+    """
+    Фотографии, привязанные к серийному номеру БУ (для отчётов №4 и №6).
+    """
+    pcs_no = models.CharField("Серийный номер БУ", max_length=100, db_index=True)
+    image = models.FileField("Фотография", upload_to="sn_photos/%Y/%m/%d/")
+    caption = models.CharField("Подпись / имя", max_length=255, blank=True, default="")
+    uploaded_by = models.CharField("Кто загрузил", max_length=100, blank=True)
+    uploaded_at = models.DateTimeField("Загружено", auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Фотография SN"
+        verbose_name_plural = "Фотографии SN"
+        ordering = ["-uploaded_at"]
+        indexes = [
+            models.Index(fields=["pcs_no"]),
+        ]
+
+    def __str__(self):
+        return f"{self.pcs_no} — {self.caption or self.image.name}"
