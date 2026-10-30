@@ -108,3 +108,7 @@ class MESAdminSite(AdminSite):
 
 
 mes_admin_site = MESAdminSite(name="mes_admin")
+
+from backup.admin import setup_backup_urls  # noqa: E402
+
+setup_backup_urls(mes_admin_site)

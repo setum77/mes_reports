@@ -58,6 +58,13 @@
   </div>
 
   <div class="module mes-dashboard">
+    <h2>Резервное копирование</h2>
+    <div class="mes-dashboard__links">
+      <a class="button button-accent" href="{% url 'mes_admin:backup_index' %}">Управление бэкапами</a>
+    </div>
+  </div>
+
+  <div class="module mes-dashboard">
     <h2>Отчёты</h2>
     <div class="mes-dashboard__links">
       {% for link in report_links %}

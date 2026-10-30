@@ -18,7 +18,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: setum77/mes-reports:1.0.0
+    image: setum77/flashy-lighter
     restart: unless-stopped
     env_file:
       - .env
@@ -38,7 +38,7 @@ services:
     image: nginx:1.27-alpine
     restart: unless-stopped
     ports:
-      - "8000:80"
+      - "127.0.0.1:8002:80"
     volumes:
       - static_volume:/static:ro
       - media_volume:/media:ro
