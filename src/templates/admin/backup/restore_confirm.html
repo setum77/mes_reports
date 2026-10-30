@@ -1,0 +1,30 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<div id="content-main">
+  <div class="module">
+    <h1>{{ title }}</h1>
+
+    <div class="form-row">
+      <p><strong>Бэкап:</strong> {{ backup.name }}</p>
+      <p><strong>Время создания:</strong> {{ backup.timestamp }}</p>
+      <p><strong>Размер:</strong> {{ backup.size|filesizeformat }}</p>
+      <p><strong>Файлы:</strong>
+        {% for file in backup.files %}
+          {{ file.name }}{% if not loop.last %}, {% endif %}
+        {% endfor %}
+      </p>
+    </div>
+
+    <div class="form-row">
+      <p><strong>Внимание!</strong> При восстановлении будут заменены текущие данные.</p>
+      <p>Убедитесь, что у вас есть актуальная резервная копия перед восстановлением.</p>
+    </div>
+
+    <form method="post">{% csrf_token %}
+      <button type="submit" class="button button-accent">Восстановить данные</button>
+      <a href="{% url 'mes_admin:backup_restore' %}" class="button">Отмена</a>
+    </form>
+  </div>
+</div>
+{% endblock %}

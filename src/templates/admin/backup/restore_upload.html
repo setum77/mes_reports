@@ -1,0 +1,112 @@
+{% extends "admin/base_site.html" %}
+{% load widget_tweaks %}
+
+{% block content %}
+<div id="content-main">
+  <div class="module">
+    <h1>{{ title }}</h1>
+
+    <div class="form-row">
+      <p>Загрузите ранее созданный архив бэкапа (.tar.gz) для восстановления данных.</p>
+      <p><strong>Внимание!</strong> При восстановлении будут заменены текущие данные.</p>
+    </div>
+
+    <form id="upload-form" method="post" enctype="multipart/form-data">{% csrf_token %}
+      {{ form.as_p }}
+    </form>
+
+    <div id="progress-container" class="progress-container" style="display: none; margin: 20px 0;">
+      <div id="progress-bar" class="progress-bar" style="width: 100%; background: #f0f0f0; border-radius: 4px; height: 24px; overflow: hidden;">
+        <div id="progress-fill" style="width: 0%; background: var(--primary, #79aec8); height: 100%; transition: width 0.3s ease; line-height: 24px; color: white; text-align: center; font-size: 12px;">0%</div>
+      </div>
+      <div id="progress-message" style="margin-top: 10px; font-size: 14px;">Загрузка и восстановление...</div>
+    </div>
+
+    <div class="mes-dashboard__links">
+      <button id="submit-btn" type="submit" class="button button-accent">Загрузить и восстановить</button>
+      <a href="{% url 'mes_admin:backup_index' %}" class="button">Отмена</a>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+    var form = document.getElementById("upload-form");
+    var submitBtn = document.getElementById("submit-btn");
+    var progressContainer = document.getElementById("progress-container");
+    var progressFill = document.getElementById("progress-fill");
+    var progressMessage = document.getElementById("progress-message");
+    var csrfToken = document.querySelector("[name=csrfmiddlewaretoken]").value;
+
+    form.addEventListener("submit", function(e) {
+        e.preventDefault();
+
+        var formData = new FormData(form);
+        var taskId = "restore_" + Date.now();
+
+        progressContainer.style.display = "block";
+        submitBtn.disabled = true;
+        submitBtn.textContent = "Восстанавливается...";
+
+        fetch("/admin/backup/restore-upload-bg/" + taskId + "/", {
+            method: "POST",
+            body: formData,
+            headers: {
+                "X-Requested-With": "XMLHttpRequest",
+                "X-CSRFToken": csrfToken,
+            },
+            credentials: "same-origin"
+        })
+        .then(function(response) { return response.json(); })
+        .then(function(data) {
+            if (data.error) {
+                progressMessage.textContent = "Ошибка: " + data.error;
+                submitBtn.disabled = false;
+                submitBtn.textContent = "Загрузить и восстановить";
+                return;
+            }
+
+            var polling = setInterval(function() {
+                fetch("/admin/backup/progress/" + taskId + "/", {
+                    headers: {
+                        "X-Requested-With": "XMLHttpRequest",
+                        "X-CSRFToken": csrfToken,
+                    },
+                    credentials: "same-origin"
+                })
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        if (data.status === "completed") {
+                            progressFill.style.width = "100%";
+                            progressFill.textContent = "100%";
+                            progressMessage.textContent = data.message || "Готово!";
+                            clearInterval(polling);
+                            submitBtn.disabled = false;
+                            submitBtn.textContent = "Готово";
+                            setTimeout(function() {
+                                window.location.href = "/admin/backup/";
+                            }, 2000);
+                        } else {
+                            var percent = Math.round((data.step / 5) * 100);
+                            progressFill.style.width = percent + "%";
+                            progressFill.textContent = percent + "%";
+                            progressMessage.textContent = data.message || "Восстанавливается...";
+                        }
+                    })
+                    .catch(function() {
+                        progressMessage.textContent = "Ошибка соединения";
+                        clearInterval(polling);
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = "Повторить";
+                    });
+            }, 500);
+        })
+        .catch(function(err) {
+            progressMessage.textContent = "Ошибка: " + err;
+            submitBtn.disabled = false;
+            submitBtn.textContent = "Загрузить и восстановить";
+        });
+    });
+})();
+</script>
+{% endblock %}

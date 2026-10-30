@@ -1,0 +1,58 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<div id="content-main">
+  <div class="module">
+    <h1>{{ title }}</h1>
+
+    <div class="form-row">
+      <p>Восстановление данных из загруженного архива. Пожалуйста, подождите...</p>
+    </div>
+
+    <div class="progress-container" style="margin: 20px 0;">
+      <div id="progress-bar" class="progress-bar" style="width: 100%; background: #f0f0f0; border-radius: 4px; height: 24px; overflow: hidden;">
+        <div id="progress-fill" style="width: 0%; background: var(--primary, #79aec8); height: 100%; transition: width 0.3s ease; line-height: 24px; color: white; text-align: center; font-size: 12px;">0%</div>
+      </div>
+      <div id="progress-message" style="margin-top: 10px; font-size: 14px;">Ожидание...</div>
+    </div>
+
+    <div class="mes-dashboard__links">
+      <a href="{% url 'mes_admin:backup_index' %}" class="button">Назад в панель управления</a>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+    var taskId = "{{ task_id }}";
+    var polling = setInterval(function() {
+        fetch("/admin/backup/progress/" + taskId + "/")
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                var fill = document.getElementById("progress-fill");
+                var message = document.getElementById("progress-message");
+                
+                if (data.status === "completed") {
+                    fill.style.width = "100%";
+                    fill.textContent = "100%";
+                    message.textContent = data.message || "Готово!";
+                    clearInterval(polling);
+                    
+                    setTimeout(function() {
+                        window.location.href = "/admin/backup/";
+                    }, 2000);
+                } else {
+                    var percent = Math.round((data.step / 5) * 100);
+                    fill.style.width = percent + "%";
+                    fill.textContent = percent + "%";
+                    message.textContent = data.message || "Обрабатывается...";
+                }
+            })
+            .catch(function(err) {
+                document.getElementById("progress-message").textContent = "Ошибка: " + err;
+                clearInterval(polling);
+            });
+    }, 500);
+})();
+</script>
+{% endblock %}

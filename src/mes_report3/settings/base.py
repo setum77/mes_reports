@@ -25,6 +25,7 @@ INSTALLED_APPS = [
     "production",
     "uploads",
     "reports",
+    "backup",
 ]
 
 MIDDLEWARE = [
@@ -87,3 +88,5 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 104857600
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+
+BACKUP_ROOT = BASE_DIR / "backups"

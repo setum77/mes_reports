@@ -1,0 +1,59 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<div id="content-main">
+  <div class="module">
+    <h1>{{ title }}</h1>
+
+    {% if backups %}
+    <table class="model-list">
+      <thead>
+        <tr>
+          <th>Имя бэкапа</th>
+          <th>Время создания</th>
+          <th>Размер</th>
+          <th>Файлы</th>
+          <th>Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for backup in backups %}
+        <tr>
+          <td>{{ backup.name }}</td>
+          <td>{{ backup.timestamp }}</td>
+          <td>{{ backup.size|filesizeformat }}</td>
+          <td>
+            {% for file in backup.files %}
+              {{ file.name }}{% if not loop.last %}, {% endif %}
+            {% endfor %}
+          </td>
+          <td>
+            <a href="{% url 'mes_admin:backup_restore_confirm' backup_name=backup.name %}" class="button">Восстановить</a>
+            <a href="{% url 'mes_admin:backup_download' backup_name=backup.name %}" class="button">Скачать</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    {% if page_obj.has_other_pages %}
+    <div class="pagination">
+      {% if page_obj.has_previous %}
+        <a href="?page={{ page_obj.previous_page_number }}">Назад</a>
+      {% endif %}
+      Страница {{ page_obj.number }} из {{ page_obj.paginator.num_pages }}
+      {% if page_obj.has_next %}
+        <a href="?page={{ page_obj.next_page_number }}">Вперёд</a>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% else %}
+    <p>Нет доступных бэкапов.</p>
+    {% endif %}
+
+    <div class="mes-dashboard__links">
+      <a class="button" href="{% url 'mes_admin:backup_index' %}">Назад</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

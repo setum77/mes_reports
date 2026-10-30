@@ -1,0 +1,15 @@
+{% extends "admin/base_site.html" %}
+{% load i18n widget_tweaks %}
+
+{% block content %}
+<div id="content-main">
+  <div class="module">
+    <h1>{{ title }}</h1>
+    <form method="post">{% csrf_token %}
+      {{ form.as_p }}
+      <button type="submit" class="button button-accent">Продолжить</button>
+      <a href="{% url 'mes_admin:backup_index' %}" class="button">Отмена</a>
+    </form>
+  </div>
+</div>
+{% endblock %}
