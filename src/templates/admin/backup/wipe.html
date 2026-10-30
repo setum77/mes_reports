@@ -1,0 +1,22 @@
+{% extends "admin/base_site.html" %}
+{% load i18n widget_tweaks %}
+
+{% block content %}
+<div id="content-main">
+  <div class="module">
+    <h1>{{ title }}</h1>
+
+    <div class="form-row">
+      <p><strong>Внимание!</strong> Это действие необратимо.</p>
+      <p>Будут удалены все данные из приложения production и все медиафайлы.</p>
+      <p>Введите токен подтверждения, чтобы продолжить.</p>
+    </div>
+
+    <form method="post">{% csrf_token %}
+      {{ form.as_p }}
+      <button type="submit" class="button" style="background-color: #dc3545;">Подтвердить удаление всех данных</button>
+      <a href="{% url 'mes_admin:backup_index' %}" class="button">Назад</a>
+    </form>
+  </div>
+</div>
+{% endblock %}

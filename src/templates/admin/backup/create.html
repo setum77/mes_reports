@@ -1,0 +1,16 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+<div id="content-main">
+  <div class="module">
+    <h1>{{ title }}</h1>
+    <form method="post">{% csrf_token %}
+      <div class="form-row">
+        <p>Создать полный бэкап: база данных (production app) + медиафайлы.</p>
+        <button type="submit" class="button button-accent">Создать бэкап</button>
+        <a href="{% url 'mes_admin:backup_index' %}" class="button">Отмена</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
