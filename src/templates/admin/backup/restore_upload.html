@@ -13,6 +13,27 @@
 
     <form id="upload-form" method="post" enctype="multipart/form-data">{% csrf_token %}
       {{ form.as_p }}
+
+      <div id="archive-info-section" class="form-row" style="display: none;">
+        <hr>
+        <h2>Информация об архиве</h2>
+        <div id="archive-info-content">
+          <p><strong>Файл:</strong> <span id="archive-name">—</span></p>
+          <p><strong>Размер:</strong> <span id="archive-size">—</span></p>
+          <p><strong>Проект:</strong> <span id="archive-project">—</span></p>
+          <p><strong>Время создания:</strong> <span id="archive-timestamp">—</span></p>
+          <p><strong>Версия Django:</strong> <span id="archive-django-version">—</span></p>
+          <p><strong>Записей в базе:</strong> <span id="archive-record-count">—</span></p>
+          <p><strong>Контрольная сумма (SHA256):</strong> <span id="archive-checksum">—</span></p>
+          <p><strong>Медиафайлы в архиве:</strong> <span id="archive-media">отсутствуют</span></p>
+          <p><strong>Файлы в архиве:</strong> <span id="archive-files">—</span></p>
+        </div>
+      </div>
+
+      <div class="mes-dashboard__links">
+        <button id="submit-btn" type="submit" class="button button-accent" disabled>Выберите архив для восстановления</button>
+        <a href="{% url 'mes_admin:backup_index' %}" class="button">Отмена</a>
+      </div>
     </form>
 
     <div id="progress-container" class="progress-container" style="display: none; margin: 20px 0;">
@@ -22,33 +43,43 @@
       <div id="progress-message" style="margin-top: 10px; font-size: 14px;">Загрузка и восстановление...</div>
     </div>
 
-    <div class="mes-dashboard__links">
-      <button id="submit-btn" type="submit" class="button button-accent">Загрузить и восстановить</button>
-      <a href="{% url 'mes_admin:backup_index' %}" class="button">Отмена</a>
-    </div>
   </div>
 </div>
 
 <script>
 (function() {
     var form = document.getElementById("upload-form");
+    var fileInput = document.querySelector("input[type='file']");
     var submitBtn = document.getElementById("submit-btn");
     var progressContainer = document.getElementById("progress-container");
     var progressFill = document.getElementById("progress-fill");
     var progressMessage = document.getElementById("progress-message");
     var csrfToken = document.querySelector("[name=csrfmiddlewaretoken]").value;
+    var archiveInfoSection = document.getElementById("archive-info-section");
 
-    form.addEventListener("submit", function(e) {
-        e.preventDefault();
+    // --- Archive info inspection on file selection ---
+    fileInput.addEventListener("change", function() {
+        var file = fileInput.files[0];
+        if (!file) {
+            archiveInfoSection.style.display = "none";
+            submitBtn.disabled = true;
+            submitBtn.textContent = "Выберите архив для восстановления";
+            return;
+        }
 
-        var formData = new FormData(form);
-        var taskId = "restore_" + Date.now();
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Восстановить";
+        archiveInfoSection.style.display = "block";
 
-        progressContainer.style.display = "block";
-        submitBtn.disabled = true;
-        submitBtn.textContent = "Восстанавливается...";
+        // Show basic file info immediately
+        document.getElementById("archive-name").textContent = file.name;
+        document.getElementById("archive-size").textContent = file.size + " байт";
 
-        fetch("/admin/backup/restore-upload-bg/" + taskId + "/", {
+        // Call inspect endpoint to read manifest
+        var formData = new FormData();
+        formData.append("archive", file);
+
+        fetch("/admin/backup/restore-upload-inspect/", {
             method: "POST",
             body: formData,
             headers: {
@@ -60,12 +91,102 @@
         .then(function(response) { return response.json(); })
         .then(function(data) {
             if (data.error) {
+                document.getElementById("archive-project").textContent = "Ошибка";
+                document.getElementById("archive-record-count").textContent = "Ошибка";
+                progressMessage.textContent = "Ошибка архива: " + data.error;
+                return;
+            }
+            document.getElementById("archive-project").textContent = data.project || "—";
+            document.getElementById("archive-timestamp").textContent = data.timestamp || "—";
+            document.getElementById("archive-django-version").textContent = data.django_version || "—";
+            document.getElementById("archive-record-count").textContent = data.db_record_count || "—";
+            document.getElementById("archive-checksum").textContent = (data.db_checksum_short && data.db_checksum_short !== "—") ? data.db_checksum_short : "—";
+            document.getElementById("archive-media").textContent = data.media_archive || "отсутствуют";
+
+            // Format files list
+            if (data.files && data.files.length) {
+                var filesText = data.files.map(function(f) {
+                    return f.name + " (" + f.size + " байт)";
+                }).join(", ");
+                document.getElementById("archive-files").textContent = filesText;
+            } else {
+                document.getElementById("archive-files").textContent = "—";
+            }
+
+            if (data.warning) {
+                document.getElementById("archive-project").textContent = data.project || "неизвестно";
+                document.getElementById("archive-record-count").textContent = "—";
+            }
+        })
+        .catch(function(err) {
+            document.getElementById("archive-name").textContent = file.name;
+            document.getElementById("archive-size").textContent = file.size + " байт";
+            progressMessage.textContent = "Ошибка при чтении архива: " + err;
+        });
+    });
+
+    // --- Form submit with upload progress tracking ---
+    form.addEventListener("submit", function(e) {
+        e.preventDefault();
+
+        var file = fileInput.files[0];
+        if (!file) {
+            return;
+        }
+
+        var taskId = "restore_" + Date.now();
+        var formData = new FormData(form);
+
+        progressContainer.style.display = "block";
+        submitBtn.disabled = true;
+        submitBtn.textContent = "Восстанавливается...";
+
+        // Use XMLHttpRequest to track upload progress
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", "/admin/backup/restore-upload-bg/" + taskId + "/");
+        xhr.setRequestHeader("X-Requested-With", "XMLHttpRequest");
+        xhr.setRequestHeader("X-CSRFToken", csrfToken);
+        xhr.withCredentials = true;
+
+        // Track upload progress (0% to 50% of the total bar)
+        xhr.upload.onprogress = function(e) {
+            if (e.lengthComputable) {
+                var uploadPercent = Math.round((e.loaded / e.total) * 100);
+                var percent = Math.round(uploadPercent * 0.5); // 0-50% range
+                progressFill.style.width = percent + "%";
+                progressFill.textContent = percent + "%";
+                progressMessage.textContent = "Загрузка файла: " + uploadPercent + "% (" + formatBytes(e.loaded) + ")";
+            }
+        };
+
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState !== 4) return;
+
+            if (xhr.status !== 200) {
+                progressMessage.textContent = "Ошибка сервера: " + xhr.status;
+                submitBtn.disabled = false;
+                submitBtn.textContent = "Повторить";
+                return;
+            }
+
+            var data;
+            try {
+                data = JSON.parse(xhr.responseText);
+            } catch (err) {
+                progressMessage.textContent = "Ошибка: не удалось разобрать ответ";
+                submitBtn.disabled = false;
+                submitBtn.textContent = "Повторить";
+                return;
+            }
+
+            if (data.error) {
                 progressMessage.textContent = "Ошибка: " + data.error;
                 submitBtn.disabled = false;
                 submitBtn.textContent = "Загрузить и восстановить";
                 return;
             }
 
+            // Upload complete — now poll for server-side processing (50-100%)
             var polling = setInterval(function() {
                 fetch("/admin/backup/progress/" + taskId + "/", {
                     headers: {
@@ -77,6 +198,17 @@
                     .then(function(r) { return r.json(); })
                     .then(function(data) {
                         if (data.status === "completed") {
+                            // Error case: step 0 means an error occurred
+                            if (data.step === 0) {
+                                progressFill.style.width = "100%";
+                                progressFill.style.background = "#e74c3c";
+                                progressFill.textContent = "Ошибка";
+                                progressMessage.textContent = data.message || "Ошибка восстановления";
+                                clearInterval(polling);
+                                submitBtn.disabled = false;
+                                submitBtn.textContent = "Повторить";
+                                return;
+                            }
                             progressFill.style.width = "100%";
                             progressFill.textContent = "100%";
                             progressMessage.textContent = data.message || "Готово!";
@@ -87,9 +219,12 @@
                                 window.location.href = "/admin/backup/";
                             }, 2000);
                         } else {
-                            var percent = Math.round((data.step / 5) * 100);
-                            progressFill.style.width = percent + "%";
-                            progressFill.textContent = percent + "%";
+                            // Server-side progress: map step 1-5 to 50-100% range
+                            var serverPercent = Math.round((data.step / 5) * 50);
+                            var percent = 50 + serverPercent; // 50-100% range
+                            var clampedPercent = Math.min(percent, 100);
+                            progressFill.style.width = clampedPercent + "%";
+                            progressFill.textContent = clampedPercent + "%";
                             progressMessage.textContent = data.message || "Восстанавливается...";
                         }
                     })
@@ -100,13 +235,22 @@
                         submitBtn.textContent = "Повторить";
                     });
             }, 500);
-        })
-        .catch(function(err) {
-            progressMessage.textContent = "Ошибка: " + err;
+        };
+
+        xhr.onerror = function() {
+            progressMessage.textContent = "Ошибка соединения";
             submitBtn.disabled = false;
-            submitBtn.textContent = "Загрузить и восстановить";
-        });
+            submitBtn.textContent = "Повторить";
+        };
+
+        xhr.send(formData);
     });
+
+    function formatBytes(bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + " KB";
+        return Math.round(bytes / (1024 * 1024)) + " MB";
+    }
 })();
 </script>
 {% endblock %}

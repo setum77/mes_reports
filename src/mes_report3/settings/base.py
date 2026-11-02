@@ -90,3 +90,19 @@ MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
 BACKUP_ROOT = BASE_DIR / "backups"
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+        },
+    },
+    "loggers": {
+        "backup": {
+            "handlers": ["console"],
+            "level": "DEBUG",
+        },
+    },
+}

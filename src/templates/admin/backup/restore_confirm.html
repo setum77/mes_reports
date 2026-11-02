@@ -17,6 +17,14 @@
     </div>
 
     <div class="form-row">
+      <p><strong>Проект:</strong> {{ backup.manifest.project|default:"—" }}</p>
+      <p><strong>Версия Django:</strong> {{ backup.manifest.django_version|default:"—" }}</p>
+      <p><strong>Записей в базе:</strong> {{ backup.manifest.db_record_count|default:"—" }}</p>
+      <p><strong>Контрольная сумма (SHA256):</strong> {{ backup.manifest.db_checksum|truncatechars:16|default:"—" }}</p>
+      <p><strong>Медиафайлы в архиве:</strong> {{ backup.manifest.media_archive|default:"отсутствуют" }}</p>
+    </div>
+
+    <div class="form-row">
       <p><strong>Внимание!</strong> При восстановлении будут заменены текущие данные.</p>
       <p>Убедитесь, что у вас есть актуальная резервная копия перед восстановлением.</p>
     </div>

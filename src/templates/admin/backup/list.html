@@ -12,6 +12,7 @@
           <th>Имя бэкапа</th>
           <th>Время создания</th>
           <th>Размер</th>
+          <th>Записей</th>
           <th>Файлы</th>
           <th>Действия</th>
         </tr>
@@ -22,6 +23,7 @@
           <td>{{ backup.name }}</td>
           <td>{{ backup.timestamp }}</td>
           <td>{{ backup.size|filesizeformat }}</td>
+          <td>{% if backup.manifest %}{{ backup.manifest.db_record_count|default:"—" }}{% else %}—{% endif %}</td>
           <td>
             {% for file in backup.files %}
               {{ file.name }}{% if not loop.last %}, {% endif %}

@@ -9,6 +9,15 @@
       <p>Восстановление данных из бэкапа "{{ backup_name }}". Пожалуйста, подождите...</p>
     </div>
 
+    {% if manifest %}
+    <div class="form-row">
+      <p><strong>Проект:</strong> {{ manifest.project|default:"—" }}</p>
+      <p><strong>Записей в базе:</strong> {{ manifest.db_record_count|default:"—" }}</p>
+      <p><strong>Контрольная сумма (SHA256):</strong> {{ manifest.db_checksum|truncatechars:16|default:"—" }}</p>
+      <p><strong>Медиафайлы в архиве:</strong> {{ manifest.media_archive|default:"отсутствуют" }}</p>
+    </div>
+    {% endif %}
+
     <div id="progress-container" class="progress-container" style="margin: 20px 0;">
       <div id="progress-bar" class="progress-bar" style="width: 100%; background: #f0f0f0; border-radius: 4px; height: 24px; overflow: hidden;">
         <div id="progress-fill" style="width: 0%; background: var(--primary, #79aec8); height: 100%; transition: width 0.3s ease; line-height: 24px; color: white; text-align: center; font-size: 12px;">0%</div>
@@ -38,6 +47,14 @@
                 var message = document.getElementById("progress-message");
 
                 if (data.status === "completed") {
+                    if (data.step === 0) {
+                        fill.style.width = "100%";
+                        fill.style.background = "#e74c3c";
+                        fill.textContent = "Ошибка";
+                        message.textContent = data.message || "Ошибка восстановления";
+                        clearInterval(polling);
+                        return;
+                    }
                     fill.style.width = "100%";
                     fill.textContent = "100%";
                     message.textContent = data.message || "Готово!";

@@ -1,3 +1,5 @@
+import uuid
+
 from django.contrib import messages
 from django.core.paginator import Paginator
 from django.http import FileResponse, JsonResponse
@@ -7,10 +9,14 @@ from django.urls import path
 
 from backup.forms import RestoreForm, UploadRestoreForm, WipeConfirmForm
 from backup.utils import (
+    PROJECT_IDENTIFIER,
+    _read_manifest,
+    _set_progress,
     create_full_backup,
     download_backup,
     get_progress,
     get_backup_info,
+    inspect_uploaded_archive,
     list_backups,
     restore_backup,
     upload_and_restore,
@@ -32,7 +38,9 @@ class BackupViews:
             path("backup/restore/", self.admin_site.admin_view(self.restore_view), name="backup_restore"),
             path("backup/restore-bg/<str:backup_name>/", self.admin_site.admin_view(self.restore_backup_bg), name="backup_restore_bg"),
             path("backup/restore-upload/", self.admin_site.admin_view(self.restore_upload_view), name="backup_restore_upload"),
+            path("backup/restore-upload-inspect/", self.admin_site.admin_view(self.restore_upload_inspect), name="backup_restore_upload_inspect"),
             path("backup/restore-upload-bg/<str:task_id>/", self.admin_site.admin_view(self.restore_upload_bg), name="backup_restore_upload_bg"),
+            path("backup/restore-upload-confirm/<str:task_id>/", self.admin_site.admin_view(self.restore_upload_confirm), name="backup_restore_upload_confirm"),
             path("backup/restore/<str:backup_name>/", self.admin_site.admin_view(self.restore_confirm), name="backup_restore_confirm"),
             path("backup/restore-progress/<str:backup_name>/<str:task_id>/", self.admin_site.admin_view(self.restore_progress), name="backup_restore_progress"),
             path("backup/wipe/", self.admin_site.admin_view(self.wipe_view), name="backup_wipe"),
@@ -77,6 +85,11 @@ class BackupViews:
             return redirect("admin:login")
 
         task_id = str(uuid.uuid4())
+
+        # Set initial progress so the first poll doesn't see None (which
+        # progress_view interprets as "completed").
+        _set_progress(task_id, 0, "Запуск создания бэкапа...")
+
         import threading
 
         thread = threading.Thread(
@@ -156,6 +169,11 @@ class BackupViews:
             return JsonResponse({"error": "Unauthorized"}, status=401)
 
         task_id = str(uuid.uuid4())
+
+        # Set initial progress so the first poll doesn't see None (which
+        # progress_view interprets as "completed").
+        _set_progress(task_id, 0, "Запуск восстановления...")
+
         import threading
 
         thread = threading.Thread(
@@ -175,6 +193,33 @@ class BackupViews:
             form = UploadRestoreForm(request.POST, request.FILES)
             if form.is_valid():
                 task_id = str(uuid.uuid4())
+
+                # Read file content into memory before starting the thread.
+                archive_file = form.cleaned_data["archive"]
+
+                # Inspect the archive to display its info on the confirm page.
+                archive_info = inspect_uploaded_archive(archive_file)
+                archive_file.seek(0)  # Reset for reading
+
+                file_content = archive_file.read()
+                # Store archive info in session for the confirm page (non-JS fallback).
+                if "error" not in archive_info:
+                    request.session["restore_upload_archive_info"] = archive_info
+
+                # Set initial progress so the first poll doesn't see None (which
+                # progress_view interprets as "completed").
+                _set_progress(task_id, 0, "Запуск восстановления...")
+
+                import io
+                import threading
+
+                thread = threading.Thread(
+                    target=upload_and_restore,
+                    kwargs={"archive_file": io.BytesIO(file_content), "task_id": task_id},
+                )
+                thread.daemon = True
+                thread.start()
+
                 return redirect("mes_admin:backup_restore_upload_confirm", task_id=task_id)
             else:
                 for field, errors in form.errors.items():
@@ -191,19 +236,70 @@ class BackupViews:
         })
         return TemplateResponse(request, "admin/backup/restore_upload.html", context)
 
+    def restore_upload_confirm(self, request, task_id):
+        if not self._is_superuser(request):
+            return redirect("admin:login")
+
+        archive_info = request.session.pop("restore_upload_archive_info", None)
+
+        context = self.admin_site.each_context(request)
+        context.update({
+            "title": "Восстановление из загруженного архива",
+            "task_id": task_id,
+            "archive": archive_info,
+        })
+        return TemplateResponse(request, "admin/backup/restore_upload_confirm.html", context)
+
+    def restore_upload_inspect(self, request):
+        """Inspect an uploaded archive and return its manifest info as JSON.
+
+        Called via AJAX when the user selects a file on the restore-upload
+        page, so archive metadata can be displayed before the restore starts.
+        """
+        if not self._is_superuser(request):
+            return JsonResponse({"error": "Unauthorized"}, status=401)
+
+        if request.method != "POST" or "archive" not in request.FILES:
+            return JsonResponse({"error": "Архив не передан в запросе"}, status=400)
+
+        archive = request.FILES["archive"]
+        info = inspect_uploaded_archive(archive)
+
+        if "error" in info:
+            return JsonResponse(info, status=400)
+
+        return JsonResponse(info)
+
     def restore_upload_bg(self, request, task_id):
+        import io
+        import logging
+        logger = logging.getLogger(__name__)
+
         if not self._is_superuser(request):
             return JsonResponse({"error": "Unauthorized"}, status=401)
 
         archive = request.FILES.get("archive")
         if not archive:
+            logger.warning("[restore_upload_bg] No archive file in request, task_id=%s", task_id)
             return JsonResponse({"error": "No file uploaded"}, status=400)
+
+        # Read file content into memory before starting the thread.
+        # Django's UploadedFile temp files are cleaned up when the request
+        # ends, which happens right after we return the response — before
+        # the background thread has a chance to read them.
+        file_content = archive.read()
+        logger.info("[restore_upload_bg] Read archive into memory: name=%s size=%d, task_id=%s",
+                    getattr(archive, "name", "?"), len(file_content), task_id)
+
+        # Set initial progress so the first poll doesn't see None (which
+        # progress_view interprets as "completed").
+        _set_progress(task_id, 0, "Запуск восстановления...")
 
         import threading
 
         thread = threading.Thread(
             target=upload_and_restore,
-            kwargs={"archive_file": archive, "task_id": task_id},
+            kwargs={"archive_file": io.BytesIO(file_content), "task_id": task_id},
         )
         thread.daemon = True
         thread.start()
@@ -216,6 +312,11 @@ class BackupViews:
 
         if request.method == "POST":
             task_id = str(uuid.uuid4())
+
+            # Set initial progress so the first poll doesn't see None (which
+            # progress_view interprets as "completed").
+            _set_progress(task_id, 0, "Запуск восстановления...")
+
             import threading
 
             thread = threading.Thread(
@@ -243,11 +344,15 @@ class BackupViews:
         if not self._is_superuser(request):
             return redirect("admin:login")
 
+        backup_info = get_backup_info(backup_name)
+        manifest = backup_info.get("manifest", {}) if backup_info else {}
+
         context = self.admin_site.each_context(request)
         context.update({
             "title": "Восстановление: {}".format(backup_name),
             "backup_name": backup_name,
             "task_id": task_id,
+            "manifest": manifest,
         })
         return TemplateResponse(request, "admin/backup/restore_progress.html", context)
 
