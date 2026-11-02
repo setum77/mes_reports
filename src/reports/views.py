@@ -616,18 +616,68 @@ class Report4View(TemplateView):
         return response
 
 
+class ManualDefectForm(forms.ModelForm):
+    comment = forms.CharField(
+        label="Комментарий",
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 3}),
+    )
+
+    class Meta:
+        model = ManualDefect
+        fields = ["pcs_no", "production_spec", "lot_number", "entry_date"]
+        widgets = {
+            "entry_date": forms.DateInput(attrs={"type": "date"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["production_spec"].required = False
+        self.fields["lot_number"].required = False
+
+
 @method_decorator(admin_required, name="dispatch")
 class ManualDefectCreateView(CreateView):
     model = ManualDefect
-    fields = ["pcs_no", "production_spec", "lot_number", "entry_date", "reason", "comment"]
+    form_class = ManualDefectForm
     template_name = "reports/defect_form.html"
+
+    def get_form(self, form_class=None):
+        form = super().get_form(form_class)
+        specs = sorted(set(
+            ProductionRecord.objects.exclude(production_spec__isnull=True)
+            .exclude(production_spec="")
+            .values_list("production_spec", flat=True)
+        ))
+        lots = sorted(set(
+            ProductionRecord.objects.exclude(lot_number__isnull=True)
+            .exclude(lot_number="")
+            .values_list("lot_number", flat=True)
+        ))
+        form.fields["production_spec"].widget = forms.Select(
+            choices=[("", "—")] + [(s, s) for s in specs]
+        )
+        form.fields["lot_number"].widget = forms.Select(
+            choices=[("", "—")] + [(l, l) for l in lots]
+        )
+        return form
 
     def get_success_url(self):
         return reverse("reports:report4") + "?added=1"
 
     def form_valid(self, form):
         form.instance.created_by = getattr(self.request.user, "username", "admin")
-        return super().form_valid(form)
+        response = super().form_valid(form)
+        # Save comment to SNComment (shared with report6)
+        comment_text = form.cleaned_data.get("comment", "").strip()
+        if comment_text:
+            sn_comment, _ = SNComment.objects.get_or_create(pcs_no=form.instance.pcs_no)
+            sn_comment.comment = comment_text
+            if not sn_comment.created_by:
+                sn_comment.created_by = form.instance.created_by
+            sn_comment.save()
+        ProductionRecord.objects.filter(pcs_no=form.instance.pcs_no).update(defect=True)
+        return response
 
 
 class SNCommentForm(forms.ModelForm):
@@ -811,6 +861,9 @@ class SNPhotoUploadView(View):
             messages.success(request, "Фотография загружена.")
         else:
             messages.error(request, "Ошибка загрузки фотографии.")
+        next_url = request.POST.get("next") or request.GET.get("next")
+        if next_url:
+            return redirect(next_url)
         return redirect(f"{reverse('reports:report6')}?pcs_no={pcs_no}")
 
 
@@ -829,6 +882,9 @@ class SNPhotoRenameView(View):
         except SNPhoto.DoesNotExist:
             messages.error(request, "Фотография не найдена.")
             return redirect("reports:report6")
+        next_url = request.POST.get("next") or request.GET.get("next")
+        if next_url:
+            return redirect(next_url)
         return redirect(f"{reverse('reports:report6')}?pcs_no={photo.pcs_no}")
 
 
@@ -847,6 +903,9 @@ class SNPhotoDeleteView(View):
         except SNPhoto.DoesNotExist:
             messages.error(request, "Фотография не найдена.")
             return redirect("reports:report6")
+        next_url = request.POST.get("next") or request.GET.get("next")
+        if next_url:
+            return redirect(next_url)
         return redirect(f"{reverse('reports:report6')}?pcs_no={pcs_no}")
 
 
@@ -868,7 +927,7 @@ class Report6View(TemplateView):
         exists = None
 
         if pcs_no:
-            exists = ProductionRecord.objects.filter(pcs_no=pcs_no).exists()
+            exists = ProductionRecord.objects.filter(pcs_no=pcs_no).exists() or ManualDefect.objects.filter(pcs_no=pcs_no).exists()
             if exists:
                 data = report6_serial_number(pcs_no)
                 summary = report6_summary(pcs_no)

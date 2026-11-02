@@ -222,9 +222,9 @@ def test_report4_manual_comment_is_used_without_sn_comment():
         pcs_no=pcs_no,
         production_spec="SPEC-MANUAL",
         lot_number="LOT-MANUAL",
-        comment="Ручной комментарий",
         created_by="admin",
     )
+    SNComment.objects.create(pcs_no=pcs_no, comment="Ручной комментарий", created_by="admin")
 
     data = report4_defects()
     row = next(item for item in data if item["pcs_no"] == pcs_no)
@@ -276,7 +276,7 @@ def test_report4_defect_filter_both_include_manual_defect():
     pcs_no = "SN-MANUAL-BOTH"
     ManualDefect.objects.create(
         pcs_no=pcs_no, production_spec="SPEC", lot_number="LOT",
-        comment="Ручной", created_by="admin"
+        created_by="admin"
     )
     for defect_filter in ("defect", "in_progress"):
         data = report4_defects(defect_filter=defect_filter)
@@ -1967,8 +1967,7 @@ def test_admin_audit_fields_are_set_on_create():
                 "pcs_no": defect_pcs_no,
                 "production_spec": "SPEC-ADMIN",
                 "lot_number": "LOT-ADMIN",
-                "reason": "Admin test",
-                "comment": "Created through admin",
+                "entry_date": "2026-01-01T12:00:00",
                 "_save": "Save",
             },
         )

@@ -78,16 +78,13 @@ class ManualDefectAdmin(StaffBusinessModelAdmin):
         (None, {
             "fields": ("pcs_no", "production_spec", "lot_number", "entry_date"),
         }),
-        ("Информация о браке", {
-            "fields": ("reason", "comment"),
-        }),
         ("Аудит", {
             "fields": ("created_by", "created_at"),
             "classes": ("collapse",),
         }),
     )
     list_display = ["pcs_no", "production_spec", "lot_number", "entry_date", "created_by", "created_at"]
-    search_fields = ["pcs_no", "production_spec", "lot_number", "reason", "comment"]
+    search_fields = ["pcs_no", "production_spec", "lot_number", "comment"]
     list_filter = ["production_spec", "lot_number", "entry_date", "created_at", "created_by"]
     list_per_page = 50
     readonly_fields = ["created_by", "created_at"]

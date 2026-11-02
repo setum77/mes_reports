@@ -110,7 +110,9 @@
             {% else %}
             <tr class="table-danger">
                 <td>{{ forloop.counter }}</td>
-                <td class="font-monospace">{{ row.pcs_no }}</td>
+                <td class="font-monospace">
+                    <a href="{% url 'reports:report6' %}?pcs_no={{ row.pcs_no|urlencode }}" class="text-decoration-none">{{ row.pcs_no }}</a>
+                </td>
                 <td>{{ row.production_spec }}</td>
                 <td>{{ row.lot_number|default:'' }}</td>
                 <td class="small text-nowrap">{% if row.entry_date %}{{ row.entry_date|date:"Y-m-d H:i" }}{% endif %}</td>
@@ -119,18 +121,39 @@
                     {% if row.photos %}
                     <div class="d-flex flex-column">
                         {% for photo in row.photos %}
-                        <a href="#" class="text-decoration-none open-photos-btn small py-1"
-                            data-photos="{{ row.photos|json_encode|escape }}"
-                            title="Просмотр фотографий">
-                            {{ photo.caption|default:photo.filename|truncatechars:40 }}
-                        </a>
+                        <div class="d-flex align-items-center mb-1">
+                            <a href="#" class="me-2 open-photos-btn small"
+                                data-photos="{{ row.photos|json_encode|escape }}"
+                                title="Просмотр фотографий">
+                                {{ photo.caption|default:photo.filename|truncatechars:40 }}
+                            </a>
+                            {% if user.is_staff %}
+                            <form method="post" action="{% url 'reports:sn_photo_delete' photo.id %}" class="d-inline ms-1"
+                                  onsubmit="return confirm('Удалить фотографию?')">
+                                {% csrf_token %}
+                                <input type="hidden" name="next" value="{% url 'reports:report4' %}">
+                                <button type="submit" class="btn btn-outline-danger btn-sm py-0 px-1"><i class="bi bi-trash"></i></button>
+                            </form>
+                            {% endif %}
+                        </div>
                         {% endfor %}
                     </div>
                     {% else %}
                     <span class="text-muted small">—</span>
                     {% endif %}
+                    {% if user.is_staff %}
+                    <button type="button" class="btn btn-outline-primary btn-sm mt-1" data-bs-toggle="modal"
+                            data-bs-target="#manualPhotoUploadModal{{ forloop.counter }}">
+                        <i class="bi bi-plus"></i> Добавить
+                    </button>
+                    {% endif %}
                 </td>
-                <td class="small">{{ row.comment|default:'' }}</td>
+                <td class="small">
+                    {{ row.comment|default:'' }}
+                    {% if user.is_staff %}
+                    <a href="{% url 'reports:sn_comment_edit' row.pcs_no %}" class="text-decoration-none ms-2" title="Редактировать комментарий">Редактировать</a>
+                    {% endif %}
+                </td>
             </tr>
             {% endif %}
             {% empty %}
@@ -175,6 +198,39 @@
         </div>
     </div>
 </div>
+
+{% for row in data %}
+{% if row.is_manual and user.is_staff %}
+<div class="modal fade" id="manualPhotoUploadModal{{ forloop.counter }}" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="post" action="{% url 'reports:sn_photo_upload' row.pcs_no %}" enctype="multipart/form-data">
+        <div class="modal-header">
+          <h5 class="modal-title">Добавить фотографию</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+        </div>
+        <div class="modal-body">
+          {% csrf_token %}
+          <input type="hidden" name="next" value="{% url 'reports:report4' %}">
+          <div class="mb-3">
+            <label class="form-label">Фотография</label>
+            <input type="file" name="image" class="form-control" accept="image/*" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Подпись / имя</label>
+            <input type="text" name="caption" class="form-control" maxlength="255">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+          <button type="submit" class="btn btn-primary">Загрузить</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endfor %}
 
 {% include 'shared/photo_viewer.html' %}
 {% endblock %}

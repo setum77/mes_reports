@@ -69,8 +69,6 @@ class ManualDefect(models.Model):
     production_spec = models.CharField("Спецификация", max_length=200, blank=True, null=True)
     lot_number = models.CharField("Номер лота", max_length=50, blank=True, null=True)
     entry_date = models.DateTimeField("Дата поступления в производство", blank=True, null=True)
-    reason = models.TextField("Причина брака", blank=True)
-    comment = models.TextField("Комментарий", blank=True, default="")
     created_by = models.CharField("Кто добавил", max_length=100, blank=True)
     created_at = models.DateTimeField("Создано", auto_now_add=True)
 

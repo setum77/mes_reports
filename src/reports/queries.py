@@ -543,6 +543,7 @@ def report4_defects(start_date=None, end_date=None, defect_filter='defect', limi
         cursor.execute(sql, params)
         rows = dictfetchall(cursor)
 
+    sql_pcs = {row["pcs_no"] for row in rows}
     manual_defects = ManualDefect.objects.all()
     if start_date and end_date:
         manual_defects = manual_defects.filter(
@@ -556,6 +557,8 @@ def report4_defects(start_date=None, end_date=None, defect_filter='defect', limi
         manual_key = (md.pcs_no, md.lot_number or "")
         if manual_key in seen_manual_keys:
             continue
+        if md.pcs_no in sql_pcs:
+            continue
         seen_manual_keys.add(manual_key)
         manual_data.append({
             "pcs_no": md.pcs_no,
@@ -565,7 +568,6 @@ def report4_defects(start_date=None, end_date=None, defect_filter='defect', limi
             "last_ok_station": None,
             "last_ok_at": None,
             "is_manual": True,
-            "comment": md.comment,
         })
 
     pcs_numbers = [row["pcs_no"] for row in rows] + [
@@ -612,7 +614,7 @@ def report4_defects(start_date=None, end_date=None, defect_filter='defect', limi
             row["last_ok_station"], ""
         )
         row["last_station_date"] = row["last_ok_at"]
-        row["comment"] = comments.get(row["pcs_no"], row.get("comment", ""))
+        row["comment"] = comments.get(row["pcs_no"], "")
         row["photos"] = photos_map.get(row["pcs_no"], [])
 
     return rows + manual_data
@@ -739,13 +741,40 @@ def report6_summary(pcs_no):
     if not pcs_no:
         return None
 
-    from production.models import ProductionRecord, SNComment, SNPhoto
+    from production.models import ProductionRecord, SNComment, SNPhoto, ManualDefect
 
     records = list(
         ProductionRecord.objects.filter(pcs_no=pcs_no).order_by("created_date", "id")
     )
     if not records:
-        return None
+        md = ManualDefect.objects.filter(pcs_no=pcs_no).first()
+        if not md:
+            return None
+        sn_comment = SNComment.objects.filter(pcs_no=pcs_no).first()
+        comment = sn_comment.comment if sn_comment else ""
+        photos = []
+        for photo in SNPhoto.objects.filter(pcs_no=pcs_no).order_by("uploaded_at"):
+            photos.append({
+                "url": photo.image.url,
+                "filename": photo.image.name.split('/')[-1] if photo.image.name else "",
+                "caption": photo.caption or "",
+                "id": photo.id,
+            })
+        return {
+            "pcs_no": pcs_no,
+            "lot_number": md.lot_number or "",
+            "production_spec": md.production_spec or "",
+            "assembly_start": md.entry_date,
+            "assembly_end": None,
+            "completed": False,
+            "last_station": "",
+            "last_station_date": None,
+            "last_station_status": "",
+            "comment": comment,
+            "double_passes": "",
+            "defect": False,
+            "photos": photos,
+        }
 
     first = records[0]
 
