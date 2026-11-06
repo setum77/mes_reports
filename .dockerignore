@@ -1,0 +1,32 @@
+# Git и служебные файлы
+.git
+.gitignore
+
+# Python
+.venv
+venv
+env
+__pycache__
+*.py[cod]
+*.egg-info
+
+# Тесты и кеши
+.pytest_cache
+.coverage
+htmlcov
+
+# Инструменты разработки
+.kilo
+.vscode
+.idea
+
+# Данные, логи и секреты
+.env
+.env.*
+media
+backups
+*.log
+
+# Не нужны в образе
+promt
+tests
