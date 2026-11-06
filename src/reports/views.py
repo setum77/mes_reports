@@ -349,68 +349,81 @@ def _report1_summary(data, start_date, end_date):
     }
 
 
+def _report1_data(request):
+    """
+    Разбирает фильтры отчёта №1 и возвращает (data, context).
+
+    Общая точка для страницы и экспорта: гарантирует одинаковые фильтры,
+    сортировку и нумерацию строк.
+    """
+    today = dj_timezone.localdate()
+    filter_type = request.GET.get("filter", "year")
+    if filter_type not in REPORT1_PERIOD_TYPES:
+        filter_type = "year"
+
+    year_value = today.year
+    start_date = today.replace(month=1, day=1)
+    end_date = today.replace(month=12, day=31)
+    error = ""
+
+    if filter_type == "year":
+        try:
+            year_value = int(request.GET.get("year", today.year))
+            start_date = datetime(year_value, 1, 1).date()
+            end_date = datetime(year_value, 12, 31).date()
+        except (ValueError, TypeError):
+            error = "Выбран некорректный год."
+            year_value = today.year
+            start_date = today.replace(month=1, day=1)
+            end_date = today.replace(month=12, day=31)
+    else:
+        start_date = _report7_date(request.GET.get("start"))
+        end_date = _report7_date(request.GET.get("end"))
+        if start_date is None or end_date is None:
+            error = "Выбран некорректный период."
+            start_date = today.replace(month=1, day=1)
+            end_date = today.replace(month=12, day=31)
+        elif end_date < start_date:
+            error = "Дата начала не может быть позже даты окончания."
+            start_date = today.replace(month=1, day=1)
+            end_date = today.replace(month=12, day=31)
+
+    data = report1_orders(start_date, end_date)
+
+    sort_field, sort_dir = get_sort_params(request, "report1")
+    if sort_field:
+        data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report1"])
+    else:
+        # По умолчанию старые лоты сверху — одинаково для страницы и экспорта.
+        data = apply_sort(data, "start", "asc", SORTABLE_FIELDS["report1"])
+    for index, row in enumerate(data, 1):
+        row["N"] = index
+
+    return data, {
+        "filter_type": filter_type,
+        "start_date": start_date,
+        "end_date": end_date,
+        "year_value": year_value,
+        "error": error,
+        "sort_field": sort_field,
+        "sort_dir": sort_dir,
+    }
+
+
 class Report1View(TemplateView):
     template_name = "reports/report1.html"
 
     def get(self, request, *args, **kwargs):
-        today = dj_timezone.localdate()
-        filter_type = request.GET.get("filter", "year")
-        if filter_type not in REPORT1_PERIOD_TYPES:
-            filter_type = "year"
+        data, context = _report1_data(request)
 
-        year_value = today.year
-        start_date = today.replace(month=1, day=1)
-        end_date = today.replace(month=12, day=31)
-        error = ""
-
-        if filter_type == "year":
-            try:
-                year_value = int(request.GET.get("year", today.year))
-                start_date = datetime(year_value, 1, 1).date()
-                end_date = datetime(year_value, 12, 31).date()
-            except (ValueError, TypeError):
-                error = "Выбран некорректный год."
-                year_value = today.year
-                start_date = today.replace(month=1, day=1)
-                end_date = today.replace(month=12, day=31)
-        else:
-            start_value = request.GET.get("start")
-            end_value = request.GET.get("end")
-            start_date = _report7_date(start_value)
-            end_date = _report7_date(end_value)
-            if start_date is None or end_date is None:
-                error = "Выбран некорректный период."
-                start_date = today.replace(month=1, day=1)
-                end_date = today.replace(month=12, day=31)
-            elif end_date < start_date:
-                error = "Дата начала не может быть позже даты окончания."
-                start_date = today.replace(month=1, day=1)
-                end_date = today.replace(month=12, day=31)
-
-        data = report1_orders(start_date, end_date)
-
-        sort_field, sort_dir = get_sort_params(request, "report1")
-        if sort_field:
-            data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report1"])
-        else:
-            # default sort by start ascending
-            data = apply_sort(data, "start", "asc", SORTABLE_FIELDS["report1"])
-        for i, row in enumerate(data, 1):
-            row["N"] = i
-
-        if error:
-            messages.error(request, error)
+        if context["error"]:
+            messages.error(request, context["error"])
 
         return self.render_to_response(self.get_context_data(
             data=data,
-            summary=_report1_summary(data, start_date, end_date),
-            filter_type=filter_type,
-            start_date=start_date,
-            end_date=end_date,
-            year_value=year_value,
-            years=range(2024, today.year + 2),
-            sort_field=sort_field,
-            sort_dir=sort_dir,
+            summary=_report1_summary(data, context["start_date"], context["end_date"]),
+            years=range(2024, dj_timezone.localdate().year + 2),
+            **context,
         ))
 
 
@@ -578,47 +591,70 @@ REPORT4_DESCRIPTION = """\
 """
 
 
+def _report4_data(request):
+    """
+    Разбирает фильтры отчёта №4 и возвращает (data, context).
+
+    Общая точка для страницы и экспорта.
+    """
+    filter_type = request.GET.get("filter", "90d")
+    defect_filter = request.GET.get("defect_filter", "defect")
+    lot_filter = request.GET.get("lot", "")
+    error = ""
+
+    if filter_type == "period":
+        start_date = _report7_date(request.GET.get("start"))
+        end_date = _report7_date(request.GET.get("end"))
+        if start_date is None or end_date is None:
+            error = "Выбран некорректный период."
+            start_date, end_date = get_date_range("90d")
+        elif end_date < start_date:
+            error = "Дата начала не может быть позже даты окончания."
+            start_date, end_date = get_date_range("90d")
+    elif filter_type == "lot":
+        start_date, end_date = None, None
+    else:
+        start_date, end_date = get_date_range(filter_type)
+
+    sort_field, sort_dir = get_sort_params(request, "report4")
+    limit = 30 if not lot_filter and not sort_field and filter_type == "30d" else None
+    data = report4_defects(
+        start_date, end_date,
+        defect_filter=defect_filter, limit=limit,
+        lot_number=lot_filter or None,
+    )
+
+    if lot_filter:
+        data = [d for d in data if lot_filter.lower() in (d.get("lot_number") or "").lower()]
+
+    if sort_field:
+        data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report4"])
+
+    return data, {
+        "filter_type": filter_type,
+        "defect_filter": defect_filter,
+        "lot_filter": lot_filter,
+        "start_date": start_date,
+        "end_date": end_date,
+        "sort_field": sort_field,
+        "sort_dir": sort_dir,
+        "error": error,
+    }
+
+
 class Report4View(TemplateView):
     template_name = "reports/report4.html"
 
     def get(self, request, *args, **kwargs):
-        filter_type = request.GET.get("filter", "90d")
-        defect_filter = request.GET.get("defect_filter", "defect")
-        lot_filter = request.GET.get("lot", "")
+        data, context = _report4_data(request)
 
-        if filter_type == "period":
-            start_date = _report7_date(request.GET.get("start"))
-            end_date = _report7_date(request.GET.get("end"))
-            if start_date is None or end_date is None:
-                messages.error(request, "Выбран некорректный период.")
-                start_date, end_date = get_date_range("90d")
-            elif end_date < start_date:
-                messages.error(request, "Дата начала не может быть позже даты окончания.")
-                start_date, end_date = get_date_range("90d")
-        elif filter_type == "lot":
-            start_date, end_date = None, None
-        else:
-            start_date, end_date = get_date_range(filter_type)
-
-        sort_field, sort_dir = get_sort_params(request, "report4")
-        limit = 30 if not lot_filter and not sort_field and filter_type == "30d" else None
-        data = report4_defects(
-            start_date, end_date,
-            defect_filter=defect_filter, limit=limit,
-            lot_number=lot_filter or None,
-        )
-
-        if lot_filter:
-            data = [d for d in data if lot_filter.lower() in (d.get("lot_number") or "").lower()]
-
-        if sort_field:
-            data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report4"])
+        if context["error"]:
+            messages.error(request, context["error"])
 
         response = self.render_to_response(self.get_context_data(
-            data=data, filter_type=filter_type, start_date=start_date, end_date=end_date,
-            lot_filter=lot_filter, defect_filter=defect_filter,
-            sort_field=sort_field, sort_dir=sort_dir,
+            data=data,
             report4_description_lines=REPORT4_DESCRIPTION.strip().split("\n"),
+            **context,
         ))
         response["Cache-Control"] = "no-store"
         return response
@@ -833,36 +869,50 @@ def _report5_period(request):
     }
 
 
+def _report5_data(request):
+    """
+    Разбирает фильтры отчёта №5 и возвращает (data, context).
+
+    context содержит период, сортировку и готовую сводку — общие для страницы
+    и экспорта.
+    """
+    period = _report5_period(request)
+    lot_number = period["lot_value"] if period["filter_type"] == "lot" else None
+    data = report5_repeated_passes(
+        period["start_date"], period["end_date"], lot_number=lot_number
+    )
+
+    if lot_number:
+        data = [d for d in data if lot_number.lower() in (d.get("lot_number") or "").lower()]
+
+    sort_field, sort_dir = get_sort_params(request, "report5")
+    if sort_field:
+        data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report5"])
+
+    return data, {
+        **period,
+        "sort_field": sort_field,
+        "sort_dir": sort_dir,
+        "summary": report5_summary(data),
+    }
+
+
 class Report5View(TemplateView):
     template_name = "reports/report5.html"
 
     def get(self, request, *args, **kwargs):
-        period = _report5_period(request)
-        lot_number = period["lot_value"] if period["filter_type"] == "lot" else None
-        data = report5_repeated_passes(
-            period["start_date"], period["end_date"], lot_number=lot_number
-        )
+        data, context = _report5_data(request)
 
-        if lot_number:
-            data = [d for d in data if lot_number.lower() in (d.get("lot_number") or "").lower()]
-
-        sort_field, sort_dir = get_sort_params(request, "report5")
-        if sort_field:
-            data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report5"])
-
-        summary = report5_summary(data)
-
-        if period["error"]:
-            messages.error(request, period["error"])
+        if context["error"]:
+            messages.error(request, context["error"])
 
         today = dj_timezone.localdate()
         return self.render_to_response(self.get_context_data(
-            data=data, summary=summary,
+            data=data,
             years=range(2024, today.year + 2),
             months=range(1, 13),
             report5_description_lines=REPORT5_DESCRIPTION.strip().split("\n"),
-            sort_field=sort_field, sort_dir=sort_dir,
-            **period,
+            **context,
         ))
 
 
@@ -1022,28 +1072,44 @@ class Report6View(TemplateView):
         return response
 
 
+def _report7_data(request):
+    """
+    Разбирает фильтры отчёта №7 и возвращает (data, context).
+
+    context содержит период, сортировку и готовую сводку — общие для страницы
+    и экспорта.
+    """
+    period = _report7_period(request)
+    data = report7_station130_output(period["start_date"], period["end_date"])
+
+    sort_field, sort_dir = get_sort_params(request, "report7")
+    if sort_field:
+        data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report7"])
+
+    return data, {
+        **period,
+        "sort_field": sort_field,
+        "sort_dir": sort_dir,
+        "summary": _report7_summary(
+            data, period["start_date"], period["end_date"]
+        ),
+    }
+
+
 class Report7View(TemplateView):
     template_name = "reports/report7.html"
 
     def get(self, request, *args, **kwargs):
-        period = _report7_period(request)
-        data = report7_station130_output(period["start_date"], period["end_date"])
+        data, context = _report7_data(request)
 
-        sort_field, sort_dir = get_sort_params(request, "report7")
-        if sort_field:
-            data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report7"])
-
-        if period["error"]:
-            messages.error(request, period["error"])
+        if context["error"]:
+            messages.error(request, context["error"])
 
         return self.render_to_response(self.get_context_data(
             data=data,
-            summary=_report7_summary(data, period["start_date"], period["end_date"]),
             months=range(1, 13),
             years=range(2024, dj_timezone.localdate().year + 2),
-            sort_field=sort_field,
-            sort_dir=sort_dir,
-            **period,
+            **context,
         ))
 
 
@@ -1075,21 +1141,7 @@ class _ExcelExportBase(View):
 
 class Report1ExportView(_ExcelExportBase):
     def get(self, request):
-        filter_type = request.GET.get("filter", "year")
-        if filter_type == "period":
-            start_date = _report7_date(request.GET.get("start"))
-            end_date = _report7_date(request.GET.get("end"))
-            if start_date is None or end_date is None or end_date < start_date:
-                start_date, end_date = get_date_range("year")
-        else:
-            start_date, end_date = get_date_range(filter_type)
-        data = report1_orders(start_date, end_date)
-
-        sort_field, sort_dir = get_sort_params(request, "report1")
-        if sort_field:
-            data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report1"])
-            for i, row in enumerate(data, 1):
-                row["N"] = i
+        data, _context = _report1_data(request)
 
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -1343,32 +1395,7 @@ class Report3ExportView(Report2ExportView):
 
 class Report4ExportView(_ExcelExportBase):
     def get(self, request):
-        filter_type = request.GET.get("filter", "90d")
-        defect_filter = request.GET.get("defect_filter", "defect")
-        lot_filter = request.GET.get("lot", "")
-
-        if filter_type == "period":
-            start_date = _report7_date(request.GET.get("start"))
-            end_date = _report7_date(request.GET.get("end"))
-            if start_date is None or end_date is None or end_date < start_date:
-                start_date, end_date = get_date_range("90d")
-        elif filter_type == "lot":
-            start_date, end_date = None, None
-        else:
-            start_date, end_date = get_date_range(filter_type)
-
-        sort_field, sort_dir = get_sort_params(request, "report4")
-        limit = 30 if not lot_filter and not sort_field and filter_type == "30d" else None
-        data = report4_defects(
-            start_date, end_date,
-            defect_filter=defect_filter, limit=limit,
-            lot_number=lot_filter or None,
-        )
-        if lot_filter:
-            data = [d for d in data if lot_filter.lower() in (d.get("lot_number") or "").lower()]
-
-        if sort_field:
-            data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report4"])
+        data, _context = _report4_data(request)
 
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -1395,20 +1422,8 @@ class Report4ExportView(_ExcelExportBase):
 
 class Report5ExportView(_ExcelExportBase):
     def get(self, request):
-        period = _report5_period(request)
-        lot_number = period["lot_value"] if period["filter_type"] == "lot" else None
-        data = report5_repeated_passes(
-            period["start_date"], period["end_date"], lot_number=lot_number
-        )
-
-        if lot_number:
-            data = [d for d in data if lot_number.lower() in (d.get("lot_number") or "").lower()]
-
-        sort_field, sort_dir = get_sort_params(request, "report5")
-        if sort_field:
-            data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report5"])
-
-        summary = report5_summary(data)
+        data, context = _report5_data(request)
+        summary = context["summary"]
 
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -1437,14 +1452,14 @@ class Report5ExportView(_ExcelExportBase):
         summary_ws["A1"].fill = PatternFill("solid", fgColor="1F4E78")
         summary_ws["A1"].alignment = Alignment(horizontal="center")
 
-        if period["start_date"] and period["end_date"]:
-            date_str = f'{period["start_date"]:%d.%m.%Y} — {period["end_date"]:%d.%m.%Y}'
+        if context["start_date"] and context["end_date"]:
+            date_str = f'{context["start_date"]:%d.%m.%Y} — {context["end_date"]:%d.%m.%Y}'
         else:
-            date_str = f'По лоту: {period["lot_value"]}' if period["lot_value"] else "без фильтра по дате"
+            date_str = f'По лоту: {context["lot_value"]}' if context["lot_value"] else "без фильтра по дате"
 
         summary_rows = [
             ["Период", date_str],
-            ["Фильтр", period["filter_type"]],
+            ["Фильтр", context["filter_type"]],
         ]
         for sr, row in enumerate(summary_rows, 2):
             for sc, val in enumerate(row, 1):
@@ -1530,19 +1545,14 @@ class Report6ExportView(_ExcelExportBase):
 
 class Report7ExportView(_ExcelExportBase):
     def get(self, request):
-        period = _report7_period(request)
-        data = report7_station130_output(period["start_date"], period["end_date"])
+        data, context = _report7_data(request)
+        summary = context["summary"]
 
-        sort_field, sort_dir = get_sort_params(request, "report7")
-        if sort_field:
-            data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report7"])
-
-        summary = _report7_summary(data, period["start_date"], period["end_date"])
         wb = openpyxl.Workbook()
         summary_ws = wb.active
         summary_ws.title = "Сводка"
         summary_rows = [
-            ["Период", f'{period["start_date"].isoformat()} — {period["end_date"].isoformat()}'],
+            ["Период", f'{context["start_date"].isoformat()} — {context["end_date"].isoformat()}'],
             ["Всего дней", summary["total_days"]],
             ["Выпущено продукции", summary["released_count"]],
             ["Лоты", summary["lots"]],
@@ -1570,8 +1580,8 @@ class Report7ExportView(_ExcelExportBase):
             ws.cell(row_num, 5, created_date.time().replace(tzinfo=None))
 
         filename = (
-            f'report7_{period["start_date"].isoformat()}'
-            f'_{period["end_date"].isoformat()}.xlsx'
+            f'report7_{context["start_date"].isoformat()}'
+            f'_{context["end_date"].isoformat()}.xlsx'
         )
         return self._make_response(wb, filename)
 

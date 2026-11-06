@@ -48,12 +48,6 @@
         <strong>{{ dashboard_metrics.manual_defects.total }}</strong>
         <span class="mes-dashboard__meta">За {{ dashboard_metrics.recent_days }} дней: {{ dashboard_metrics.manual_defects.recent }}</span>
       </a>
-
-      <a class="mes-dashboard__card" href="{% url 'mes_admin:production_report5comment_changelist' %}">
-        <span class="mes-dashboard__label">Комментарии отчёта 5</span>
-        <strong>{{ dashboard_metrics.report5_comments.total }}</strong>
-        <span class="mes-dashboard__meta">За {{ dashboard_metrics.recent_days }} дней: {{ dashboard_metrics.report5_comments.recent }}</span>
-      </a>
     </div>
   </div>
 

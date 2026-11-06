@@ -21,7 +21,7 @@ from openpyxl import load_workbook
 
 from mes_report3.admin_site import mes_admin_site
 from production.admin import LotInfoAdmin, ProductionRecordAdmin
-from production.models import LotInfo, ManualDefect, ProductionRecord, Report5Comment, SNComment, SNPhoto
+from production.models import LotInfo, ManualDefect, ProductionRecord, SNComment, SNPhoto
 from reports.queries import (
     report1_orders,
     report2_line_productivity,
@@ -222,9 +222,6 @@ def test_report5_repeated_passes_fields_and_comment():
             position_no="20", workstation_name="FCT1",
         )
     SNComment.objects.create(pcs_no="SN-R5", comment="основной комментарий")
-    Report5Comment.objects.create(
-        pcs_no="SN-R5", station_no=20, lot_number="LOT-R5", comment="устаревший"
-    )
 
     data = report5_repeated_passes(date(2026, 6, 1), date(2026, 6, 30))
 
@@ -1925,6 +1922,40 @@ def test_report1_export_defaults_to_current_year(monkeypatch):
     assert captured["end"] == date(today.year, 12, 31)
 
 
+@pytest.mark.django_db
+def test_report1_export_order_matches_page(monkeypatch):
+    """Экспорт №1 сортирует по умолчанию так же, как страница (start asc)."""
+    from reports import views
+
+    rows = [
+        {
+            "N": 1, "LOT": "LOT-NEW", "production_spec": "S", "Total": 1,
+            "Production": 1, "Ok": 0, "Diff": 1, "Defect": "", "defect_sns": [],
+            "start": datetime(2026, 5, 2, 9, 0), "finish": None, "comment": "",
+        },
+        {
+            "N": 2, "LOT": "LOT-OLD", "production_spec": "S", "Total": 1,
+            "Production": 1, "Ok": 0, "Diff": 1, "Defect": "", "defect_sns": [],
+            "start": datetime(2026, 5, 1, 9, 0), "finish": None, "comment": "",
+        },
+    ]
+    monkeypatch.setattr(
+        views, "report1_orders", lambda start, end: [dict(row) for row in rows]
+    )
+
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        page = Client().get("/reports/1/")
+        page.render()
+        export = Client().get("/reports/1/export/")
+
+    assert [row["LOT"] for row in page.context_data["data"]] == ["LOT-OLD", "LOT-NEW"]
+
+    workbook = load_workbook(BytesIO(export.content), read_only=True)
+    sheet = workbook["Сводный отчет"]
+    exported = [sheet.cell(row, 2).value for row in range(2, 4)]
+    assert exported == ["LOT-OLD", "LOT-NEW"]
+
+
 @pytest.mark.parametrize(
     ("report_number", "view_name", "query_name"),
     [
@@ -2276,7 +2307,7 @@ def test_admin_staff_sees_business_models_but_not_auth_models():
             for app in app_list
             for model in app["models"]
         }
-        assert {"ProductionRecord", "LotInfo", "ManualDefect", "Report5Comment"} <= model_names
+        assert {"ProductionRecord", "LotInfo", "ManualDefect"} <= model_names
         assert "User" not in model_names
         assert "Group" not in model_names
         assert not any(app["app_label"] == "auth" for app in app_list)
@@ -2357,7 +2388,6 @@ def test_admin_audit_fields_are_set_on_create():
         client = Client()
         client.force_login(user)
         defect_pcs_no = f"ADMIN-DEFECT-{user.pk}"
-        comment_pcs_no = f"ADMIN-COMMENT-{user.pk}"
 
         defect_response = client.post(
             "/admin/production/manualdefect/add/",
@@ -2373,21 +2403,6 @@ def test_admin_audit_fields_are_set_on_create():
         defect = ManualDefect.objects.get(pcs_no=defect_pcs_no)
         assert defect.created_by == user.username
         assert defect.created_at is not None
-
-        comment_response = client.post(
-            "/admin/production/report5comment/add/",
-            {
-                "pcs_no": comment_pcs_no,
-                "station_no": "17",
-                "lot_number": "LOT-ADMIN",
-                "comment": "Created through admin",
-                "_save": "Save",
-            },
-        )
-        assert comment_response.status_code == 302
-        comment = Report5Comment.objects.get(pcs_no=comment_pcs_no)
-        assert comment.created_by == user.username
-        assert comment.created_at is not None
 
 
 @pytest.mark.django_db
@@ -2421,13 +2436,6 @@ def test_admin_dashboard_has_links_and_aggregate_metrics():
             lot_number="LOT-DASHBOARD",
             created_by="seed",
         )
-        Report5Comment.objects.create(
-            pcs_no="SN-DASHBOARD-COMMENT",
-            station_no=17,
-            lot_number="LOT-DASHBOARD",
-            comment="Dashboard test",
-            created_by="seed",
-        )
 
         client = Client()
         client.force_login(user)
@@ -2442,14 +2450,11 @@ def test_admin_dashboard_has_links_and_aggregate_metrics():
         assert metrics["production_records"]["recent"] >= 1
         assert metrics["manual_defects"]["total"] >= 1
         assert metrics["manual_defects"]["recent"] >= 1
-        assert metrics["report5_comments"]["total"] >= 1
-        assert metrics["report5_comments"]["recent"] >= 1
 
         for label in (
             "Лоты",
             "Записи производства",
             "Ручной брак",
-            "Комментарии отчёта 5",
             "Отчёт 1: Сводный",
             "Отчёт 7: Выпуск",
             "Загрузка Excel",
@@ -2461,7 +2466,6 @@ def test_admin_dashboard_has_links_and_aggregate_metrics():
             "mes_admin:production_lotinfo_changelist",
             "mes_admin:production_productionrecord_changelist",
             "mes_admin:production_manualdefect_changelist",
-            "mes_admin:production_report5comment_changelist",
             "reports:report1",
             "reports:report7",
             "uploads:upload_home",

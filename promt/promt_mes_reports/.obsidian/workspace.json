@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "05. Повторные проходы станций.md",
+                "file": "09. Журнал неисправностей.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "05. Повторные проходы станций"
+              "title": "09. Журнал неисправностей"
             }
           },
           {
@@ -41,16 +41,15 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "05. Повторные проходы станций.md",
+                "file": "MES reports Project.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "05. Повторные проходы станций"
+              "title": "MES reports Project"
             }
           }
-        ],
-        "currentTab": 2
+        ]
       }
     ],
     "direction": "vertical"
@@ -217,25 +216,26 @@
       "bases:Создать новую базу": false
     }
   },
-  "active": "dc3707b842b6ba81",
+  "active": "9ca24c5bfdaff539",
   "lastOpenFiles": [
+    "Описание данных (свойства).md",
+    "09. Журнал неисправностей.md",
+    "08. Отчет по станциям.md",
+    "mes_repots_Sсheme.canvas",
+    "05. Повторные проходы станций.md",
+    "MES reports Project.md",
+    "mes_reports Laguna S 2.1 free.md",
+    "KiloCode free ai.md",
     "04. Отчет по браку.md",
     "04. Отчет по браку - план работ.md",
     "06. Отчет по SN - конспект.md",
     "file:D:/asus/doc/@python/mes_reports/AGENTS.md",
-    "Описание данных (свойства).md",
     "06. Отчет по SN.md",
-    "05. Повторные проходы станций.md",
-    "MES reports Project.md",
-    "mes_reports Laguna S 2.1 free.md",
-    "mes_repots_Sсheme.canvas",
-    "KiloCode free ai.md",
     "Пересмотр БД.md",
     "04. Отчет по браку - конспект.md",
     "Добро пожаловать.md",
     "02. Производительность сборочной линии.md",
     "07. Выпуск за период.md",
-    "08. Отчет по станциям.md",
     "08. по станциям.xlsx",
     "08. по станциям.csv",
     "03. Сводный отчет по месяцам.md",

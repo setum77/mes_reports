@@ -2,7 +2,7 @@ from django.contrib import admin
 
 from mes_report3.admin_site import mes_admin_site
 
-from .models import ProductionRecord, LotInfo, ManualDefect, SNComment, Report5Comment, SNPhoto
+from .models import ProductionRecord, LotInfo, ManualDefect, SNComment, SNPhoto
 
 
 class StaffBusinessModelAdmin(admin.ModelAdmin):
@@ -117,31 +117,6 @@ class SNCommentAdmin(StaffBusinessModelAdmin):
         super().save_model(request, obj, form, change)
 
 
-class Report5CommentAdmin(StaffBusinessModelAdmin):
-    fieldsets = (
-        (None, {
-            "fields": ("pcs_no", "station_no", "lot_number"),
-        }),
-        ("Комментарий", {
-            "fields": ("comment",),
-        }),
-        ("Аудит", {
-            "fields": ("created_by", "created_at"),
-            "classes": ("collapse",),
-        }),
-    )
-    list_display = ["pcs_no", "station_no", "lot_number", "created_by", "created_at"]
-    search_fields = ["pcs_no", "station_no", "lot_number", "comment"]
-    list_filter = ["station_no", "lot_number", "created_at", "created_by"]
-    list_per_page = 50
-    readonly_fields = ["created_by", "created_at"]
-
-    def save_model(self, request, obj, form, change):
-        if not change:
-            obj.created_by = request.user.get_username()
-        super().save_model(request, obj, form, change)
-
-
 class SNPhotoAdmin(StaffBusinessModelAdmin):
     list_display = ["pcs_no", "caption", "image_tag", "uploaded_by", "uploaded_at"]
     search_fields = ["pcs_no", "caption"]
@@ -160,5 +135,4 @@ mes_admin_site.register(ProductionRecord, ProductionRecordAdmin)
 mes_admin_site.register(LotInfo, LotInfoAdmin)
 mes_admin_site.register(ManualDefect, ManualDefectAdmin)
 mes_admin_site.register(SNComment, SNCommentAdmin)
-mes_admin_site.register(Report5Comment, Report5CommentAdmin)
 mes_admin_site.register(SNPhoto, SNPhotoAdmin)

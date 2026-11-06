@@ -44,7 +44,7 @@ class MESAdminSite(AdminSite):
         return response
 
     def get_dashboard_metrics(self):
-        from production.models import LotInfo, ManualDefect, ProductionRecord, Report5Comment
+        from production.models import LotInfo, ManualDefect, ProductionRecord
 
         now = timezone.now()
         recent_cutoff = now - timedelta(days=7)
@@ -58,11 +58,6 @@ class MESAdminSite(AdminSite):
             plan_total=Coalesce(Sum("plan_total"), Value(0)),
         )
         manual_defects = ManualDefect.objects.aggregate(
-            total=Count("id"),
-            recent=Count("id", filter=Q(created_at__gte=recent_cutoff)),
-            latest=Max("created_at"),
-        )
-        comments = Report5Comment.objects.aggregate(
             total=Count("id"),
             recent=Count("id", filter=Q(created_at__gte=recent_cutoff)),
             latest=Max("created_at"),
@@ -81,11 +76,6 @@ class MESAdminSite(AdminSite):
                 "total": manual_defects["total"],
                 "recent": manual_defects["recent"],
                 "latest": manual_defects["latest"],
-            },
-            "report5_comments": {
-                "total": comments["total"],
-                "recent": comments["recent"],
-                "latest": comments["latest"],
             },
             "recent_days": 7,
         }

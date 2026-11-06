@@ -97,27 +97,6 @@ class SNComment(models.Model):
         return self.pcs_no
 
 
-class Report5Comment(models.Model):
-    """
-    Комментарии для отчета 5 (повторные проходы станций).
-    """
-    pcs_no = models.CharField("Серийный номер БУ", max_length=100)
-    station_no = models.IntegerField("Номер станции")
-    lot_number = models.CharField("Номер лота", max_length=50, blank=True, null=True)
-    comment = models.TextField("Комментарий", blank=True, default="")
-    created_by = models.CharField("Кто добавил", max_length=100, blank=True)
-    created_at = models.DateTimeField("Создано", auto_now_add=True)
-
-    class Meta:
-        verbose_name = "Комментарий отчета 5"
-        verbose_name_plural = "Комментарии отчета 5"
-        ordering = ["-created_at"]
-        unique_together = ("pcs_no", "station_no")
-
-    def __str__(self):
-        return f"{self.pcs_no} | станция {self.station_no}"
-
-
 class SNPhoto(models.Model):
     """
     Фотографии, привязанные к серийному номеру БУ (для отчётов №4 и №6).

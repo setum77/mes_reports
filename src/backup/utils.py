@@ -46,7 +46,6 @@ PRODUCTION_MODELS = [
     "production.LotInfo",
     "production.ManualDefect",
     "production.SNComment",
-    "production.Report5Comment",
     "production.SNPhoto",
 ]
 
