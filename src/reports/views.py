@@ -22,7 +22,7 @@ from django.views import View
 from django.views.generic import TemplateView, CreateView, UpdateView
 
 from accounts.views import admin_required
-from production.models import LotInfo, ManualDefect, ProductionRecord, Report5Comment, SNComment, SNPhoto
+from production.models import LotInfo, ManualDefect, ProductionRecord, SNComment, SNPhoto
 from reports.queries import (
     _aggregate_monthly,
     get_date_range,
@@ -30,6 +30,7 @@ from reports.queries import (
     report2_line_productivity,
     report4_defects,
     report5_repeated_passes,
+    report5_summary,
     report6_serial_number,
     report6_summary,
     report7_station130_output,
@@ -54,7 +55,8 @@ SORTABLE_FIELDS = {
                  "bol_hours", "bol_production", "bol_speed"],
     "report3": ["report_month", "fol_hours", "fol_production", "fol_speed",
                  "bol_hours", "bol_production", "bol_speed"],
-    "report4": ["pcs_no", "production_spec", "lot_number", "entry_date", "last_station", "last_station_date", "comment"],    "report5": ["pcs_no", "production_spec", "lot_number", "station", "dates", "comment"],
+    "report4": ["pcs_no", "production_spec", "lot_number", "entry_date", "last_station", "last_station_date", "comment"],
+    "report5": ["pcs_no", "lot_number", "station", "station_name", "dates", "defect", "comment"],
     "report6": ["pcs_no", "lot_number", "production_spec", "subop_no", "workstation_name",
                 "created_date", "result", "test_data", "comment"],
      "report7": ["pcs_no", "lot_number", "production_spec", "created_date"],
@@ -584,12 +586,13 @@ class Report4View(TemplateView):
         lot_filter = request.GET.get("lot", "")
 
         if filter_type == "period":
-            s = request.GET.get("start")
-            e = request.GET.get("end")
-            if s and e:
-                start_date = datetime.strptime(s, "%Y-%m-%d").date()
-                end_date = datetime.strptime(e, "%Y-%m-%d").date()
-            else:
+            start_date = _report7_date(request.GET.get("start"))
+            end_date = _report7_date(request.GET.get("end"))
+            if start_date is None or end_date is None:
+                messages.error(request, "Выбран некорректный период.")
+                start_date, end_date = get_date_range("90d")
+            elif end_date < start_date:
+                messages.error(request, "Дата начала не может быть позже даты окончания.")
                 start_date, end_date = get_date_range("90d")
         elif filter_type == "lot":
             start_date, end_date = None, None
@@ -740,64 +743,120 @@ class SNCommentEditView(View):
 # Отчет 5: Повторные проходы
 # ========================
 
+REPORT5_DESCRIPTION = """\
+Отчёт «Повторные проходы станций» показывает серийные номера (SN) блоков БУ, прошедших какую-либо станцию дважды или более, независимо от статуса OK или NG.
+
+Раздел «Сводная информация» (перед основной таблицей) содержит по каждой станции: номер и название станции, количество уникальных SN, проходивших станцию более 1 раза, среднее количество прохождений серийного блока (общее количество прохождений / количество блоков) и список SN, проходивших станцию более 4 раз (каждый SN — ссылка на отчёт 6 «Отчёт по SN»).
+
+Основная таблица: SN (ссылка на отчёт 6), лот, номер и название станции, дата и время всех проходов, Defect — брак по данным отчёта «Брак» (флаг defect у записей ProductionRecord или ручной брак ManualDefect), комментарий SN — основной комментарий по серийному номеру (как в отчёте 6), редактируется администратором кнопкой-ручкой.
+
+Фильтры: Год (по умолчанию — текущий год), Месяц (выбор года и месяца), Произвольный период, По лоту.
+Экспорт в Excel включает лист «Сводка» со сводной информацией и основной лист с повторными проходами.
+"""
+
+
+REPORT5_PERIOD_TYPES = {"year", "month", "period", "lot"}
+
+
+def _report5_int(value, default, lower, upper):
+    try:
+        parsed = int(value)
+        return parsed if lower <= parsed <= upper else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _report5_period(request):
+    """Разбор фильтра периода для отчёта 5: year, month, period, lot."""
+    today = dj_timezone.localdate()
+    filter_type = request.GET.get("filter", "year")
+    if filter_type not in REPORT5_PERIOD_TYPES:
+        filter_type = "year"
+
+    year_value = today.year
+    month_value = today.month
+    lot_value = (request.GET.get("lot") or "").strip()
+    start_date = datetime(year_value, 1, 1).date()
+    end_date = datetime(year_value, 12, 31).date()
+    error = ""
+
+    if filter_type == "month":
+        year_value = _report5_int(request.GET.get("year"), today.year, 2000, 2100)
+        month_value = _report5_int(request.GET.get("month"), today.month, 1, 12)
+        try:
+            last_day = calendar.monthrange(year_value, month_value)[1]
+            start_date = datetime(year_value, month_value, 1).date()
+            end_date = datetime(year_value, month_value, last_day).date()
+        except ValueError:
+            error = "Выбран некорректный месяц."
+            year_value = today.year
+            month_value = today.month
+            start_date = datetime(year_value, 1, 1).date()
+            end_date = datetime(year_value, 12, 31).date()
+    elif filter_type == "year":
+        year_value = _report5_int(request.GET.get("year"), today.year, 2000, 2100)
+        start_date = datetime(year_value, 1, 1).date()
+        end_date = datetime(year_value, 12, 31).date()
+    elif filter_type == "period":
+        start_value = request.GET.get("start")
+        end_value = request.GET.get("end")
+        parsed_start = _report7_date(start_value)
+        parsed_end = _report7_date(end_value)
+        if parsed_start is None or parsed_end is None:
+            error = "Выбран некорректный период."
+        elif parsed_end < parsed_start:
+            error = "Дата начала не может быть позже даты окончания."
+        if error:
+            year_value = today.year
+            start_date = datetime(year_value, 1, 1).date()
+            end_date = datetime(year_value, 12, 31).date()
+        else:
+            start_date = parsed_start
+            end_date = parsed_end
+    else:  # lot
+        start_date = None
+        end_date = None
+
+    return {
+        "filter_type": filter_type,
+        "start_date": start_date,
+        "end_date": end_date,
+        "year_value": year_value,
+        "month_value": month_value,
+        "lot_value": lot_value,
+        "error": error,
+    }
+
+
 class Report5View(TemplateView):
     template_name = "reports/report5.html"
 
     def get(self, request, *args, **kwargs):
-        filter_type = request.GET.get("filter", "30d")
-        lot_filter = request.GET.get("lot", "")
+        period = _report5_period(request)
+        data = report5_repeated_passes(period["start_date"], period["end_date"])
 
-        if filter_type == "period":
-            s = request.GET.get("start")
-            e = request.GET.get("end")
-            if s and e:
-                start_date = datetime.strptime(s, "%Y-%m-%d").date()
-                end_date = datetime.strptime(e, "%Y-%m-%d").date()
-            else:
-                start_date, end_date = get_date_range("30d")
-        elif filter_type == "lot":
-            start_date, end_date = None, None
-        else:
-            start_date, end_date = get_date_range(filter_type)
+        if period["filter_type"] == "lot" and period["lot_value"]:
+            lot_value = period["lot_value"]
+            data = [d for d in data if lot_value.lower() in (d.get("lot_number") or "").lower()]
 
         sort_field, sort_dir = get_sort_params(request, "report5")
-        limit = 50 if not lot_filter and not start_date and not sort_field else None
-        data = report5_repeated_passes(start_date, end_date, limit=limit)
-
-        if lot_filter:
-            data = [d for d in data if lot_filter.lower() in (d.get("lot_number") or "").lower()]
-
         if sort_field:
             data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report5"])
 
+        summary = report5_summary(data)
+
+        if period["error"]:
+            messages.error(request, period["error"])
+
+        today = dj_timezone.localdate()
         return self.render_to_response(self.get_context_data(
-            data=data, filter_type=filter_type, start_date=start_date, end_date=end_date,
-            lot_filter=lot_filter, sort_field=sort_field, sort_dir=sort_dir,
+            data=data, summary=summary,
+            years=range(2024, today.year + 2),
+            months=range(1, 13),
+            report5_description_lines=REPORT5_DESCRIPTION.strip().split("\n"),
+            sort_field=sort_field, sort_dir=sort_dir,
+            **period,
         ))
-
-
-@method_decorator(admin_required, name="dispatch")
-class Report5CommentFormView(View):
-    template_name = "reports/report5_comment_form.html"
-
-    def get(self, request):
-        return render(request, self.template_name)
-
-    def post(self, request):
-        pcs_no = request.POST.get("pcs_no", "")
-        station_no = request.POST.get("station_no")
-        comment = request.POST.get("comment", "")
-        if pcs_no and station_no:
-            try:
-                station_no = int(station_no)
-                Report5Comment.objects.update_or_create(
-                    pcs_no=pcs_no, station_no=station_no,
-                    defaults={"comment": comment, "created_by": getattr(request.user, "username", "admin")},
-                )
-                messages.success(request, "Комментарий сохранен.")
-            except ValueError:
-                messages.error(request, "Введите корректный номер станции.")
-        return redirect("reports:report5")
 
 
 # ========================
@@ -1009,15 +1068,12 @@ class _ExcelExportBase(View):
 
 class Report1ExportView(_ExcelExportBase):
     def get(self, request):
-        filter_type = request.GET.get("filter", "30d")
+        filter_type = request.GET.get("filter", "year")
         if filter_type == "period":
-            s = request.GET.get("start")
-            e = request.GET.get("end")
-            if s and e:
-                start_date = datetime.strptime(s, "%Y-%m-%d").date()
-                end_date = datetime.strptime(e, "%Y-%m-%d").date()
-            else:
-                start_date, end_date = get_date_range("30d")
+            start_date = _report7_date(request.GET.get("start"))
+            end_date = _report7_date(request.GET.get("end"))
+            if start_date is None or end_date is None or end_date < start_date:
+                start_date, end_date = get_date_range("year")
         else:
             start_date, end_date = get_date_range(filter_type)
         data = report1_orders(start_date, end_date)
@@ -1285,12 +1341,9 @@ class Report4ExportView(_ExcelExportBase):
         lot_filter = request.GET.get("lot", "")
 
         if filter_type == "period":
-            s = request.GET.get("start")
-            e = request.GET.get("end")
-            if s and e:
-                start_date = datetime.strptime(s, "%Y-%m-%d").date()
-                end_date = datetime.strptime(e, "%Y-%m-%d").date()
-            else:
+            start_date = _report7_date(request.GET.get("start"))
+            end_date = _report7_date(request.GET.get("end"))
+            if start_date is None or end_date is None or end_date < start_date:
                 start_date, end_date = get_date_range("90d")
         elif filter_type == "lot":
             start_date, end_date = None, None
@@ -1331,45 +1384,83 @@ class Report4ExportView(_ExcelExportBase):
 
 class Report5ExportView(_ExcelExportBase):
     def get(self, request):
-        filter_type = request.GET.get("filter", "30d")
-        lot_filter = request.GET.get("lot", "")
+        period = _report5_period(request)
+        data = report5_repeated_passes(period["start_date"], period["end_date"])
 
-        if filter_type == "period":
-            s = request.GET.get("start")
-            e = request.GET.get("end")
-            if s and e:
-                start_date = datetime.strptime(s, "%Y-%m-%d").date()
-                end_date = datetime.strptime(e, "%Y-%m-%d").date()
-            else:
-                start_date, end_date = get_date_range("30d")
-        elif filter_type == "lot":
-            start_date, end_date = None, None
-        else:
-            start_date, end_date = get_date_range(filter_type)
+        if period["filter_type"] == "lot" and period["lot_value"]:
+            lot_value = period["lot_value"]
+            data = [d for d in data if lot_value.lower() in (d.get("lot_number") or "").lower()]
 
         sort_field, sort_dir = get_sort_params(request, "report5")
-        limit = 50 if not lot_filter and not start_date and not sort_field else None
-        data = report5_repeated_passes(start_date, end_date, limit=limit)
-        if lot_filter:
-            data = [d for d in data if lot_filter.lower() in (d.get("lot_number") or "").lower()]
-
         if sort_field:
             data = apply_sort(data, sort_field, sort_dir, SORTABLE_FIELDS["report5"])
+
+        summary = report5_summary(data)
 
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Повторные проходы"
-        headers = ["№", "Серийный номер", "Production spec.", "Лот", "Станция", "Дата время", "Комментарий"]
+        headers = [
+            "№", "Серийный номер", "Лот", "Станция", "Название станции",
+            "Дата время", "Defect", "Комментарий",
+        ]
         for col, h in enumerate(headers, 1):
             ws.cell(1, col, h)
         for row_num, d in enumerate(data, 2):
             ws.cell(row_num, 1, row_num - 1)
             ws.cell(row_num, 2, d["pcs_no"])
-            ws.cell(row_num, 3, d["production_spec"])
-            ws.cell(row_num, 4, d["lot_number"] or "")
-            ws.cell(row_num, 5, d["station"])
+            ws.cell(row_num, 3, d["lot_number"] or "")
+            ws.cell(row_num, 4, d["station"])
+            ws.cell(row_num, 5, d.get("station_name", ""))
             ws.cell(row_num, 6, d["dates"])
-            ws.cell(row_num, 7, d.get("comment", ""))
+            ws.cell(row_num, 7, bool(d.get("defect")))
+            ws.cell(row_num, 8, d.get("comment", ""))
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = f"A1:H{ws.max_row}"
+
+        summary_ws = wb.create_sheet("Сводка")
+        summary_ws["A1"] = "Отчёт 5: Повторные проходы станций — сводная информация"
+        summary_ws["A1"].font = Font(bold=True, size=14, color="FFFFFF")
+        summary_ws["A1"].fill = PatternFill("solid", fgColor="1F4E78")
+        summary_ws["A1"].alignment = Alignment(horizontal="center")
+
+        if period["start_date"] and period["end_date"]:
+            date_str = f'{period["start_date"]:%d.%m.%Y} — {period["end_date"]:%d.%m.%Y}'
+        else:
+            date_str = f'По лоту: {period["lot_value"]}' if period["lot_value"] else "без фильтра по дате"
+
+        summary_rows = [
+            ["Период", date_str],
+            ["Фильтр", period["filter_type"]],
+        ]
+        for sr, row in enumerate(summary_rows, 2):
+            for sc, val in enumerate(row, 1):
+                summary_ws.cell(sr, sc, val)
+
+        header_row = 5
+        summary_headers = [
+            "Номер станции", "Название станции",
+            "SN с проходами > 1", "Среднее прохождений на блок",
+            "SN с проходами > 4",
+        ]
+        for col, h in enumerate(summary_headers, 1):
+            cell = summary_ws.cell(header_row, col, h)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="1F4E78")
+            cell.alignment = Alignment(horizontal="center")
+
+        for row_num, s in enumerate(summary, header_row + 1):
+            summary_ws.cell(row_num, 1, s["station"])
+            summary_ws.cell(row_num, 2, s["station_name"])
+            summary_ws.cell(row_num, 3, s["sn_count"])
+            summary_ws.cell(row_num, 4, s["avg_passes"])
+            summary_ws.cell(row_num, 5, ", ".join(s["sns_over_4"]))
+
+        summary_ws.column_dimensions["A"].width = 16
+        summary_ws.column_dimensions["B"].width = 40
+        summary_ws.column_dimensions["C"].width = 18
+        summary_ws.column_dimensions["D"].width = 26
+        summary_ws.column_dimensions["E"].width = 60
 
         return self._make_response(wb, "report5_repeats.xlsx")
 

@@ -7,38 +7,102 @@
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h1 class="h3 mb-0">Повторные проходы станций</h1>
     <div>
-        {% if user.is_staff %}
-        <a href="{% url 'reports:report5_comment' %}" class="btn btn-outline-warning">Добавить комментарий</a>
-        {% endif %}
+        <button type="button" class="btn btn-outline-info btn-sm me-2" data-bs-toggle="modal" data-bs-target="#report5DescriptionModal">Описание отчёта</button>
         <a href="{% url 'reports:report5_export' %}?{{ request.GET.urlencode }}" class="btn btn-outline-success">Экспорт в Excel</a>
     </div>
 </div>
 
 <div class="card p-3 mb-4">
-    <form method="get" class="row g-3 align-items-end">
+    <form method="get" class="row g-3 align-items-end" autocomplete="off">
         <div class="col-auto">
-            <label class="form-label">Фильтр</label>
-            <select name="filter" class="form-select form-select-sm" onchange="toggleExtra(this.value)">
-                <option value="30d" {% if filter_type == '30d' %}selected{% endif %}>Последние 50 записей</option>
-                <option value="month" {% if filter_type == 'month' %}selected{% endif %}>Текущий месяц</option>
+            <label class="form-label">Период</label>
+            <select name="filter" class="form-select form-select-sm" onchange="togglePeriodFields(this.value)">
+                <option value="year" {% if filter_type == 'year' %}selected{% endif %}>Год</option>
+                <option value="month" {% if filter_type == 'month' %}selected{% endif %}>Месяц</option>
                 <option value="period" {% if filter_type == 'period' %}selected{% endif %}>Выбрать период</option>
                 <option value="lot" {% if filter_type == 'lot' %}selected{% endif %}>По лоту</option>
             </select>
         </div>
-        <div class="col-auto" id="lot-field" style="display:none;">
-            <label class="form-label">Номер лота</label>
-            <input type="text" name="lot" class="form-control form-control-sm" placeholder="MO608131-001" value="{{ lot_filter }}">
+        <div class="col-auto" id="year-field" style="display:{% if filter_type == 'year' or filter_type == 'month' %}block{% else %}none{% endif %};">
+            <label for="year" class="form-label">Год</label>
+            <select id="year" name="year" class="form-select form-select-sm">
+                {% for year_number in years %}
+                <option value="{{ year_number }}" {% if year_number == year_value %}selected{% endif %}>{{ year_number }}</option>
+                {% endfor %}
+            </select>
         </div>
-        <div class="col-auto" id="period-start" style="display:none;">
-            <input type="date" name="start" class="form-control form-control-sm" {% if start_date %}value="{{ start_date|date:'Y-m-d' }}"{% endif %}>
+        <div class="col-auto" id="month-field" style="display:{% if filter_type == 'month' %}block{% else %}none{% endif %};">
+            <label for="month" class="form-label">Месяц</label>
+            <select id="month" name="month" class="form-select form-select-sm">
+                {% for month_number in months %}
+                <option value="{{ month_number }}" {% if month_number == month_value %}selected{% endif %}>{{ month_number }}</option>
+                {% endfor %}
+            </select>
         </div>
-        <div class="col-auto" id="period-end" style="display:none;">
-            <input type="date" name="end" class="form-control form-control-sm" {% if end_date %}value="{{ end_date|date:'Y-m-d' }}"{% endif %}>
+        <div class="col-auto" id="period-start" style="display:{% if filter_type == 'period' %}block{% else %}none{% endif %};">
+            <label for="start" class="form-label">Дата с</label>
+            <input id="start" name="start" type="date" class="form-control form-control-sm" value="{{ start_date|date:'Y-m-d' }}">
+        </div>
+        <div class="col-auto" id="period-end" style="display:{% if filter_type == 'period' %}block{% else %}none{% endif %};">
+            <label for="end" class="form-label">Дата по</label>
+            <input id="end" name="end" type="date" class="form-control form-control-sm" value="{{ end_date|date:'Y-m-d' }}">
+        </div>
+        <div class="col-auto" id="lot-field" style="display:{% if filter_type == 'lot' %}block{% else %}none{% endif %};">
+            <label for="lot" class="form-label">Номер лота</label>
+            <input id="lot" type="text" name="lot" class="form-control form-control-sm" placeholder="MO608131-001" value="{{ lot_value }}">
         </div>
         <div class="col-auto">
             <button type="submit" class="btn btn-primary btn-sm">Обновить</button>
         </div>
     </form>
+</div>
+
+{% if error %}
+<div class="alert alert-danger">{{ error }}</div>
+{% endif %}
+
+<p class="text-muted small mb-3">
+    {% if start_date and end_date %}
+    Период: {{ start_date|date:"Y-m-d" }} — {{ end_date|date:"Y-m-d" }}
+    {% elif lot_value %}
+    Фильтр: По лоту ({{ lot_value }})
+    {% else %}
+    Без фильтра по дате
+    {% endif %}
+</p>
+
+<h6>Сводная информация</h6>
+<div class="table-responsive mb-4">
+    <table class="table table-sm table-hover align-middle">
+        <thead class="table-light">
+            <tr>
+                <th>Номер станции</th>
+                <th>Название станции</th>
+                <th class="text-center">SN с проходами &gt; 1</th>
+                <th class="text-center">Среднее прохождений на блок</th>
+                <th>SN с проходами &gt; 4</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in summary %}
+            <tr>
+                <td>{{ row.station }}</td>
+                <td>{{ row.station_name }}</td>
+                <td class="text-center">{{ row.sn_count }}</td>
+                <td class="text-center">{{ row.avg_passes }}</td>
+                <td class="small">
+                    {% for sn in row.sns_over_4 %}
+                    <a href="{% url 'reports:report6' %}?pcs_no={{ sn|urlencode }}" class="font-monospace text-decoration-none">{{ sn }}</a>{% if not forloop.last %}, {% endif %}
+                    {% empty %}
+                    —
+                    {% endfor %}
+                </td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="5" class="text-center text-muted py-4">Нет данных</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
 </div>
 
 <div class="table-responsive">
@@ -47,10 +111,11 @@
             <tr>
                 <th>№</th>
                 <th>{% sort_link "pcs_no" "Серийный номер" %}</th>
-                <th>{% sort_link "production_spec" "Production spec." %}</th>
                 <th>{% sort_link "lot_number" "Лот" %}</th>
                 <th>{% sort_link "station" "Станция" %}</th>
+                <th>{% sort_link "station_name" "Название станции" %}</th>
                 <th>{% sort_link "dates" "Дата время" %}</th>
+                <th>{% sort_link "defect" "Defect" %}</th>
                 <th>{% sort_link "comment" "Комментарий" %}</th>
             </tr>
         </thead>
@@ -58,15 +123,23 @@
             {% for row in data %}
             <tr>
                 <td>{{ forloop.counter }}</td>
-                <td class="font-monospace">{{ row.pcs_no }}</td>
-                <td>{{ row.production_spec }}</td>
+                <td><a href="{% url 'reports:report6' %}?pcs_no={{ row.pcs_no|urlencode }}" class="font-monospace text-decoration-none">{{ row.pcs_no }}</a></td>
                 <td>{{ row.lot_number|default:'' }}</td>
                 <td>{{ row.station }}</td>
+                <td>{{ row.station_name }}</td>
                 <td class="small">{{ row.dates }}</td>
-                <td class="small">{{ row.comment|default:'' }}</td>
+                <td>{% if row.defect %}<span class="badge bg-danger">Брак</span>{% else %}<span class="badge bg-secondary">Н/Б</span>{% endif %}</td>
+                <td class="small">
+                    {{ row.comment|default:'' }}
+                    {% if user.is_staff %}
+                    <a href="{% url 'reports:sn_comment_edit' row.pcs_no %}" class="btn btn-outline-secondary btn-sm py-0 px-1 ms-1" title="Редактировать комментарий">
+                        <i class="bi bi-pencil"></i>
+                    </a>
+                    {% endif %}
+                </td>
             </tr>
             {% empty %}
-            <tr><td colspan="7" class="text-center text-muted py-4">Нет данных</td></tr>
+            <tr><td colspan="8" class="text-center text-muted py-4">Нет данных</td></tr>
             {% endfor %}
         </tbody>
     </table>
@@ -78,16 +151,52 @@
     <span class="badge bg-info">Уникальных БУ: {{ data|unique_pcs }}</span>
 </div>
 
+<!-- Description modal -->
+<div class="modal fade" id="report5DescriptionModal" tabindex="-1" aria-labelledby="report5DescriptionLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="report5DescriptionLabel">Описание отчёта «Повторные проходы станций»</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+            </div>
+            <div class="modal-body">
+                {% for line in report5_description_lines %}
+                <p class="mb-1">{{ line }}</p>
+                {% endfor %}
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Понятно</button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 {% block extra_js %}
 <script>
-function toggleExtra(val) {
-    document.getElementById('lot-field').style.display = val === 'lot' ? 'block' : 'none';
-    document.getElementById('period-start').style.display = val === 'period' ? 'block' : 'none';
-    document.getElementById('period-end').style.display = val === 'period' ? 'block' : 'none';
+function togglePeriodFields(value) {
+    // Год нужен и для «Год», и для «Месяц», поэтому переключение по набору фильтров.
+    var fieldFilters = {
+        'year-field': ['year', 'month'],
+        'month-field': ['month'],
+        'period-start': ['period'],
+        'period-end': ['period'],
+        'lot-field': ['lot']
+    };
+    Object.entries(fieldFilters).forEach(function(entry) {
+        var el = document.getElementById(entry[0]);
+        if (el) {
+            if (entry[1].indexOf(value) !== -1) {
+                el.style.display = 'block';
+                el.disabled = false;
+            } else {
+                el.style.display = 'none';
+                el.disabled = true;
+            }
+        }
+    });
 }
 document.addEventListener('DOMContentLoaded', function() {
-    toggleExtra("{{ filter_type }}");
+    togglePeriodFields('{{ filter_type }}');
 });
 </script>
 {% endblock %}

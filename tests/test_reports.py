@@ -10,7 +10,7 @@ sys.path.insert(0, "src")
 django.setup()
 
 import pytest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from io import BytesIO
 from django.contrib.auth.models import AnonymousUser, User
 from django.http import HttpResponseRedirect
@@ -27,6 +27,7 @@ from reports.queries import (
     report2_line_productivity,
     report4_defects,
     report5_repeated_passes,
+    report5_summary,
     report6_serial_number,
     report6_summary,
     report7_station130_output,
@@ -37,6 +38,7 @@ from reports.views import (
     _report1_summary,
     _report2_period,
     _report2_summary,
+    _report5_period,
     _report7_period,
     _report7_summary,
     _report8_period,
@@ -165,6 +167,166 @@ def test_report5_repeated_passes():
     assert len(data) == 1
     assert data[0]["pcs_no"] == "PCS1"
     assert data[0]["station"] == 20
+
+
+@pytest.mark.django_db
+def test_report5_repeated_passes_has_no_default_limit():
+    """Отчёт №5 не должен молча ограничивать выборку 50 строками (п.1 ТЗ)."""
+    base = timezone.make_aware(datetime(2026, 7, 1, 8, 0, 0))
+    records = [
+        ProductionRecord(
+            lot_number="LOT-MANY",
+            subop_no=20,
+            pcs_no=f"PCS-{index:03d}",
+            created_date=base + timedelta(minutes=index * 2 + attempt),
+            result="OK",
+            production_spec="SPEC",
+        )
+        for index in range(60)
+        for attempt in range(2)
+    ]
+    ProductionRecord.objects.bulk_create(records)
+
+    data = report5_repeated_passes(date(2026, 7, 1), date(2026, 7, 1))
+
+    assert len(data) == 60
+
+
+@pytest.mark.django_db
+def test_report5_repeated_passes_fields_and_comment():
+    """Отчёт №5: количество проходов, название станции и комментарий из SNComment."""
+    dt1 = timezone.make_aware(datetime(2026, 6, 1, 10, 0))
+    dt2 = dt1 + timedelta(minutes=10)
+    for moment, result in ((dt1, "OK"), (dt2, "NG")):
+        ProductionRecord.objects.create(
+            lot_number="LOT-R5", subop_no=20, pcs_no="SN-R5",
+            created_date=moment, result=result, production_spec="SPEC",
+            position_no="20", workstation_name="FCT1",
+        )
+    SNComment.objects.create(pcs_no="SN-R5", comment="основной комментарий")
+    Report5Comment.objects.create(
+        pcs_no="SN-R5", station_no=20, lot_number="LOT-R5", comment="устаревший"
+    )
+
+    data = report5_repeated_passes(date(2026, 6, 1), date(2026, 6, 30))
+
+    row = next(r for r in data if r["pcs_no"] == "SN-R5")
+    assert row["passes_count"] == 2
+    assert row["station_name"] == "FCT1"
+    assert row["comment"] == "основной комментарий"
+    assert row["defect"] is False
+    expected_first = timezone.localtime(dt1).strftime("%Y-%m-%d %H:%M:%S")
+    expected_second = timezone.localtime(dt2).strftime("%Y-%m-%d %H:%M:%S")
+    assert expected_first in row["dates"]
+    assert expected_second in row["dates"]
+
+
+@pytest.mark.django_db
+def test_report5_defect_flag_from_production_and_manual():
+    """Defect в отчёте №5: флаг ProductionRecord или запись ManualDefect."""
+    dt = timezone.make_aware(datetime(2026, 6, 2, 9, 0))
+    for pcs_no, flagged in (("SN-R5-FLAG", True), ("SN-R5-MANUAL", False)):
+        for offset in (0, 5):
+            ProductionRecord.objects.create(
+                lot_number="LOT-R5D", subop_no=70, pcs_no=pcs_no,
+                created_date=dt + timedelta(minutes=offset), result="OK",
+                production_spec="SPEC", defect=flagged,
+            )
+    ManualDefect.objects.create(pcs_no="SN-R5-MANUAL", lot_number="LOT-R5D")
+
+    data = {
+        row["pcs_no"]: row
+        for row in report5_repeated_passes(date(2026, 6, 1), date(2026, 6, 30))
+    }
+
+    assert data["SN-R5-FLAG"]["defect"] is True
+    assert data["SN-R5-MANUAL"]["defect"] is True
+
+
+def test_report5_summary_counts_by_station():
+    """Сводка отчёта №5: количество SN, среднее прохождений, SN с >4 проходами."""
+    data = [
+        {"station": 20, "station_name": "FCT1", "pcs_no": "A", "passes_count": 2},
+        {"station": 20, "station_name": "FCT1", "pcs_no": "B", "passes_count": 5},
+        {"station": 20, "station_name": "FCT1", "pcs_no": "C", "passes_count": 4},
+        {"station": 70, "station_name": "Oven", "pcs_no": "A", "passes_count": 3},
+    ]
+
+    summary = report5_summary(data)
+
+    assert [row["station"] for row in summary] == [20, 70]
+    station20 = summary[0]
+    assert station20["sn_count"] == 3
+    assert station20["avg_passes"] == round(11 / 3, 2)
+    assert station20["sns_over_4"] == ["B"]
+
+
+def test_report5_period_selection():
+    """Фильтры отчёта №5: год (по умолчанию), месяц, период, лот и ошибки."""
+    today = date.today()
+
+    default = _report5_period(RequestFactory().get("/reports/5/"))
+    assert default["filter_type"] == "year"
+    assert default["start_date"] == date(today.year, 1, 1)
+    assert default["end_date"] == date(today.year, 12, 31)
+
+    month = _report5_period(
+        RequestFactory().get("/reports/5/", {"filter": "month", "year": "2026", "month": "3"})
+    )
+    assert month["start_date"] == date(2026, 3, 1)
+    assert month["end_date"] == date(2026, 3, 31)
+
+    period = _report5_period(
+        RequestFactory().get(
+            "/reports/5/", {"filter": "period", "start": "2026-01-01", "end": "2026-01-31"}
+        )
+    )
+    assert period["start_date"] == date(2026, 1, 1)
+    assert period["end_date"] == date(2026, 1, 31)
+    assert period["error"] == ""
+
+    invalid = _report5_period(
+        RequestFactory().get(
+            "/reports/5/", {"filter": "period", "start": "bad", "end": "2026-01-31"}
+        )
+    )
+    assert invalid["error"]
+    assert invalid["start_date"] == date(today.year, 1, 1)
+
+    lot = _report5_period(RequestFactory().get("/reports/5/", {"filter": "lot", "lot": "LOT-1"}))
+    assert lot["filter_type"] == "lot"
+    assert lot["lot_value"] == "LOT-1"
+    assert lot["start_date"] is None
+    assert lot["end_date"] is None
+
+
+@pytest.mark.django_db
+def test_report5_view_context_has_summary_and_description():
+    """Report5View: в контексте есть сводка и описание отчёта, по умолчанию — год."""
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        response = Client().get("/reports/5/", {"filter": "year", "year": "2026"})
+        response.render()
+
+    assert response.status_code == 200
+    assert response.context_data["filter_type"] == "year"
+    assert isinstance(response.context_data["summary"], list)
+    assert response.context_data["report5_description_lines"]
+
+
+@pytest.mark.django_db
+def test_report5_export_has_summary_sheet():
+    """Экспорт отчёта №5 содержит основной лист и лист «Сводка» с новыми колонками."""
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        response = Client().get("/reports/5/export/", {"filter": "year", "year": "2026"})
+
+    assert response.status_code == 200
+    workbook = load_workbook(BytesIO(response.content), read_only=True)
+    assert {"Повторные проходы", "Сводка"} <= set(workbook.sheetnames)
+    header = [cell.value for cell in workbook["Повторные проходы"][1]]
+    assert header == [
+        "№", "Серийный номер", "Лот", "Станция", "Название станции",
+        "Дата время", "Defect", "Комментарий",
+    ]
 
 
 @pytest.mark.django_db
@@ -307,6 +469,41 @@ def test_report4_defect_filter_in_progress_excludes_completed():
 
 
 @pytest.mark.django_db
+def test_report4_plasma_station_name_is_spelled_correctly():
+    """Название станции 30 — Plasma Cleaning (ранее было Pasma)."""
+    pcs_no = "SN-PLASMA"
+    dt = timezone.make_aware(datetime(2026, 9, 2, 10, 0))
+    ProductionRecord.objects.create(
+        lot_number="LOT-PLASMA", subop_no=10, pcs_no=pcs_no,
+        created_date=dt, result="OK", production_spec="SPEC",
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT-PLASMA", subop_no=30, pcs_no=pcs_no,
+        created_date=dt + timedelta(minutes=5), result="OK", production_spec="SPEC",
+    )
+
+    data = report4_defects(date(2026, 9, 1), date(2026, 9, 30), defect_filter="in_progress")
+
+    row = next(r for r in data if r["pcs_no"] == pcs_no)
+    assert row["last_station"] == "Plasma Cleaning"
+
+
+@pytest.mark.django_db
+def test_report4_manual_defects_not_truncated_to_50():
+    """Ручные браки не обрезаются до 50 строк, если limit не задан."""
+    entry = timezone.make_aware(datetime(2026, 9, 10, 12, 0))
+    ManualDefect.objects.bulk_create([
+        ManualDefect(pcs_no=f"MAN-{index:03d}", lot_number="LOT-MAN", entry_date=entry)
+        for index in range(55)
+    ])
+
+    data = report4_defects(date(2026, 9, 1), date(2026, 9, 30), defect_filter="defect")
+
+    manual_rows = [row for row in data if row["is_manual"]]
+    assert len(manual_rows) == 55
+
+
+@pytest.mark.django_db
 def test_report4_view_cache_control_no_store():
     """Report4View: Cache-Control: no-store."""
     with override_settings(ALLOWED_HOSTS=["*"]):
@@ -368,6 +565,33 @@ def test_report4_view_default_filter_is_90d():
     data = report6_serial_number(pcs_no)
 
     assert data[0]["comment"] == "SN-комментарий"
+
+
+@pytest.mark.django_db
+def test_report4_view_invalid_period_does_not_crash():
+    """Report4View: некорректные даты периода не приводят к HTTP 500."""
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        client = Client()
+        for params in (
+            {"filter": "period", "start": "abc", "end": "2026-01-01"},
+            {"filter": "period", "start": "2026-02-01", "end": "2026-01-01"},
+        ):
+            response = client.get("/reports/4/", params)
+            assert response.status_code == 200
+
+
+@pytest.mark.django_db
+def test_report_exports_invalid_period_do_not_crash():
+    """Экспорты отчётов №1 и №4 не падают на некорректных датах периода."""
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        client = Client()
+        for url in ("/reports/1/export/", "/reports/4/export/"):
+            for params in (
+                {"filter": "period", "start": "not-a-date", "end": "2026-01-01"},
+                {"filter": "period", "start": "2026-02-01", "end": "2026-01-01"},
+            ):
+                response = client.get(url, params)
+                assert response.status_code == 200
 
 
 @pytest.mark.django_db
@@ -1557,6 +1781,29 @@ def test_report1_export_is_available_to_regular_user():
         assert workbook.sheetnames == ["Сводный отчет"]
 
 
+@pytest.mark.django_db
+def test_report1_export_defaults_to_current_year(monkeypatch):
+    """Экспорт №1 без параметров использует текущий год, как и страница отчёта."""
+    from reports import views
+
+    captured = {}
+
+    def fake_orders(start, end):
+        captured["start"] = start
+        captured["end"] = end
+        return []
+
+    monkeypatch.setattr(views, "report1_orders", fake_orders)
+
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        response = Client().get("/reports/1/export/")
+
+    assert response.status_code == 200
+    today = date.today()
+    assert captured["start"] == date(today.year, 1, 1)
+    assert captured["end"] == date(today.year, 12, 31)
+
+
 @pytest.mark.parametrize(
     ("report_number", "view_name", "query_name"),
     [
@@ -1589,6 +1836,21 @@ def test_report_exports_available_to_anonymous(monkeypatch, report_number, view_
 # ========================
 # Тесты отчёта 8: По станциям
 # ========================
+
+@pytest.mark.django_db
+def test_report8_ng_sns_have_no_extra_spaces():
+    """Список NG SN разбирается без лишних пробелов после запятой."""
+    dt = timezone.make_aware(datetime(2026, 5, 5, 9, 0))
+    for pcs_no in ("SN-NG-1", "SN-NG-2"):
+        ProductionRecord.objects.create(
+            lot_number="LOT-NG", subop_no=20, pcs_no=pcs_no,
+            created_date=dt, result="NG", production_spec="SPEC",
+        )
+
+    data = report8_stations(date(2026, 5, 1), date(2026, 5, 31))
+
+    assert data[0]["station_20_ng_sns"] == ["SN-NG-1", "SN-NG-2"]
+
 
 def test_report8_columns_count():
     """Отчёт 8: 36 столбцов в таблице (1 Дата + 35 столбцов по станциям)."""
@@ -1919,6 +2181,21 @@ def test_admin_superuser_sees_auth_models():
         auth_app = next(app for app in response.context["app_list"] if app["app_label"] == "auth")
         model_names = {model["object_name"] for model in auth_app["models"]}
         assert {"User", "Group"} <= model_names
+
+
+@pytest.mark.django_db
+def test_admin_manual_defect_search_uses_existing_fields():
+    """Поиск в админке «Ручной брак» не падает: поля comment у модели больше нет."""
+    ManualDefect.objects.create(pcs_no="SN-ADMIN-SEARCH", lot_number="LOT-ADMIN-SEARCH")
+
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        user = User.objects.create_superuser("admin_search", "search@example.com", "pw")
+        client = Client()
+        client.force_login(user)
+        response = client.get("/admin/production/manualdefect/", {"q": "SN-ADMIN-SEARCH"})
+
+    assert response.status_code == 200
+    assert "SN-ADMIN-SEARCH" in response.content.decode()
 
 
 @pytest.mark.django_db

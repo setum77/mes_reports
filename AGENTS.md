@@ -35,7 +35,7 @@
   `(pcs_no, subop_no, created_date)`.
 - Preserve Excel import deduplication using `ignore_conflicts=True`.
 - Required Excel columns:
-  `Lot no.`, `Subop no`, `PCSNo`, `CREATEDATE`, `result`.
+  `Lot no.`, `Production spec.`, `Subop no`, `subop name`, `PCSNo`, `CREATEDATE`, `result`, `testData`.
 - Preserve `Cache-Control: no-store` for HTML responses of reports No. 2 and No. 3, and for the No. 3 Excel export.
 - Database-backed tests require PostgreSQL.
 

@@ -4,6 +4,7 @@
 """
 from collections import Counter
 from datetime import date, timedelta
+from django.conf import settings
 from django.db import connection
 
 STATION_FOL_START = 10
@@ -394,7 +395,7 @@ def report3_monthly_productivity(start_date, end_date):
 
 REPORT4_STATION_NAMES = {
     20: "FCT1",
-    30: "Pasma Cleaning",
+    30: "Plasma Cleaning",
     50: "Assembly",
     60: "Standing",
     70: "High-Temperature Aging",
@@ -550,7 +551,9 @@ def report4_defects(start_date=None, end_date=None, defect_filter='defect', limi
             entry_date__date__gte=start_date,
             entry_date__date__lte=end_date,
         )
-    manual_defects = manual_defects.order_by("-created_at")[:50]
+    manual_defects = manual_defects.order_by("-created_at")
+    if limit:
+        manual_defects = manual_defects[:limit]
     manual_data = []
     seen_manual_keys = set()
     for md in manual_defects:
@@ -620,14 +623,22 @@ def report4_defects(start_date=None, end_date=None, defect_filter='defect', limi
     return rows + manual_data
 
 
-def report5_repeated_passes(start_date=None, end_date=None, limit=50):
+def report5_repeated_passes(start_date=None, end_date=None, limit=None):
     """
     Отчет 5: Повторные проходы станций.
     BU прошедшие какую-либо станцию более одного раза.
-    """
-    from production.models import Report5Comment
 
-    params = []
+    limit: необязательное ограничение количества строк. По умолчанию не
+    применяется — отчёт показывает все повторы выбранного периода.
+
+    Возвращает строки с полями: pcs_no, lot_number, production_spec, station,
+    station_name, position_no, workstation_name, dates, passes_count,
+    comment (из SNComment — основной комментарий по SN, как в отчёте 6),
+    defect (брак по данным отчёта «Брак»: defect=True у ProductionRecord
+    или запись ManualDefect).
+    """
+    from production.models import ManualDefect, ProductionRecord, SNComment
+
     date_clause = ""
     if start_date and end_date:
         date_clause = "created_date::date >= %s AND created_date::date <= %s"
@@ -640,7 +651,9 @@ def report5_repeated_passes(start_date=None, end_date=None, limit=50):
 
     sql = f"""
         WITH repeated AS (
-            SELECT pcs_no, lot_number, production_spec, subop_no
+            SELECT pcs_no, lot_number, production_spec, subop_no,
+                   MAX(position_no) as position_no,
+                   MAX(workstation_name) as workstation_name
             FROM production_productionrecord r
             {where_clause}
             GROUP BY pcs_no, lot_number, production_spec, subop_no
@@ -651,35 +664,96 @@ def report5_repeated_passes(start_date=None, end_date=None, limit=50):
             r.lot_number,
             r.production_spec,
             r.subop_no as station,
+            r.position_no,
+            r.workstation_name,
             STRING_AGG(
-                TO_CHAR(rr.created_date, 'YYYY-MM-DD HH24:MI:SS'),
+                TO_CHAR(rr.created_date AT TIME ZONE %s, 'YYYY-MM-DD HH24:MI:SS'),
                 ', ' ORDER BY rr.created_date
-            ) as dates
+            ) as dates,
+            COUNT(rr.id) as passes_count
         FROM repeated r
         JOIN production_productionrecord rr ON rr.pcs_no = r.pcs_no AND rr.subop_no = r.subop_no
         {where_clause}
-        GROUP BY r.pcs_no, r.lot_number, r.production_spec, r.subop_no
+        GROUP BY r.pcs_no, r.lot_number, r.production_spec, r.subop_no, r.position_no, r.workstation_name
         ORDER BY r.pcs_no, r.subop_no
         {limit_clause}
     """
-    params = date_params + date_params
+    params = date_params + [settings.TIME_ZONE] + date_params
     with connection.cursor() as cursor:
         cursor.execute(sql, params)
         rows = dictfetchall(cursor)
 
+    pcs_numbers = [r["pcs_no"] for r in rows]
     comments_map = {}
-    if rows:
-        existing = Report5Comment.objects.filter(
-            pcs_no__in=[r["pcs_no"] for r in rows],
-            station_no__in=[r["station"] for r in rows],
+    defect_pcs = set()
+    if pcs_numbers:
+        comments_map = {
+            item["pcs_no"]: item["comment"]
+            for item in SNComment.objects.filter(
+                pcs_no__in=pcs_numbers
+            ).values("pcs_no", "comment")
+        }
+        defect_pcs = set(
+            ProductionRecord.objects.filter(
+                pcs_no__in=pcs_numbers, defect=True
+            ).values_list("pcs_no", flat=True)
         )
-        for ec in existing:
-            comments_map[(ec.pcs_no, ec.station_no)] = ec.comment
+        defect_pcs |= set(
+            ManualDefect.objects.filter(
+                pcs_no__in=pcs_numbers
+            ).values_list("pcs_no", flat=True)
+        )
 
     for row in rows:
-        row["comment"] = comments_map.get((row["pcs_no"], row["station"]), "")
+        row["station_name"] = (
+            translate_workstation_name(row["position_no"], row["workstation_name"])
+            or REPORT4_STATION_NAMES.get(row["station"], "")
+        )
+        row["comment"] = comments_map.get(row["pcs_no"], "")
+        row["defect"] = row["pcs_no"] in defect_pcs
 
     return rows
+
+
+def report5_summary(data):
+    """
+    Сводная информация для отчёта 5 по данным основной таблицы.
+
+    Для каждой станции возвращает: номер станции, название станции,
+    количество уникальных SN, проходивших станцию более 1 раза,
+    среднее количество прохождений серийного блока
+    (общее количество прохождений / количество блоков)
+    и список SN, проходивших станцию более 4 раз.
+    """
+    by_station = {}
+    for row in data:
+        station = row.get("station")
+        entry = by_station.setdefault(station, {
+            "station": station,
+            "station_name": row.get("station_name", ""),
+            "sns": set(),
+            "passes_total": 0,
+            "sns_over_4": [],
+        })
+        pcs = row.get("pcs_no")
+        passes = row.get("passes_count") or 0
+        entry["sns"].add(pcs)
+        entry["passes_total"] += passes
+        if passes > 4 and pcs not in entry["sns_over_4"]:
+            entry["sns_over_4"].append(pcs)
+
+    summary = []
+    for station in sorted(by_station):
+        entry = by_station[station]
+        sn_count = len(entry["sns"])
+        summary.append({
+            "station": station,
+            "station_name": entry["station_name"],
+            "sn_count": sn_count,
+            "avg_passes": round(entry["passes_total"] / sn_count, 2) if sn_count else 0,
+            "sns_over_4": sorted(entry["sns_over_4"]),
+        })
+    return summary
 
 
 def report6_serial_number(pcs_no):
@@ -1051,7 +1125,8 @@ def report8_stations(start_date, end_date, lot_number=None):
         by_date[d][f"station_{station}_ok_count"] = r["ok_count"] or 0
         by_date[d][f"station_{station}_ng_count"] = r["ng_count"] or 0
         by_date[d][f"station_{station}_ng_sns"] = (
-            [s for s in (r["ng_sns"] or "").split(",")] if r["ng_sns"] else []
+            [s.strip() for s in (r["ng_sns"] or "").split(",") if s.strip()]
+            if r["ng_sns"] else []
         )
 
     results = []

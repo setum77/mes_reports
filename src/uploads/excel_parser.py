@@ -123,13 +123,14 @@ def import_to_database(records, created_by="system"):
     """
     Загружает записи в БД с дедупликацией.
     Возвращает: {total, inserted, duplicates}
+
+    created_by принимается для совместимости с вызывающим кодом; аудит-полей
+    у ProductionRecord и LotInfo нет, поэтому значение не сохраняется.
     """
     from production.models import ProductionRecord, LotInfo
 
     total = len(records)
     before_count = ProductionRecord.objects.count()
-
-    from production.models import ProductionRecord, LotInfo
 
     lots_data = {}
 

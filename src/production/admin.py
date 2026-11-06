@@ -84,7 +84,7 @@ class ManualDefectAdmin(StaffBusinessModelAdmin):
         }),
     )
     list_display = ["pcs_no", "production_spec", "lot_number", "entry_date", "created_by", "created_at"]
-    search_fields = ["pcs_no", "production_spec", "lot_number", "comment"]
+    search_fields = ["pcs_no", "production_spec", "lot_number"]
     list_filter = ["production_spec", "lot_number", "entry_date", "created_at", "created_by"]
     list_per_page = 50
     readonly_fields = ["created_by", "created_at"]
