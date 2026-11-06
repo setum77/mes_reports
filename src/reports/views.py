@@ -83,10 +83,11 @@ def apply_sort(data, sort_field, sort_dir, allowed_fields):
             return (0, 1, val.casefold())
         return (0, 2, val)
 
-    none_items = [item for item in data if get_key(item)[0] == 1]
-    non_none = [item for item in data if item not in none_items]
-    non_none.sort(key=get_key, reverse=(sort_dir == "desc"))
-    return non_none + none_items
+    keyed = [(get_key(item), item) for item in data]
+    none_items = [item for key, item in keyed if key[0] == 1]
+    with_values = [(key, item) for key, item in keyed if key[0] != 1]
+    with_values.sort(key=lambda pair: pair[0], reverse=(sort_dir == "desc"))
+    return [item for _key, item in with_values] + none_items
 
 
 def get_sort_params(request, report_key):
@@ -601,7 +602,11 @@ class Report4View(TemplateView):
 
         sort_field, sort_dir = get_sort_params(request, "report4")
         limit = 30 if not lot_filter and not sort_field and filter_type == "30d" else None
-        data = report4_defects(start_date, end_date, defect_filter=defect_filter, limit=limit)
+        data = report4_defects(
+            start_date, end_date,
+            defect_filter=defect_filter, limit=limit,
+            lot_number=lot_filter or None,
+        )
 
         if lot_filter:
             data = [d for d in data if lot_filter.lower() in (d.get("lot_number") or "").lower()]
@@ -833,11 +838,13 @@ class Report5View(TemplateView):
 
     def get(self, request, *args, **kwargs):
         period = _report5_period(request)
-        data = report5_repeated_passes(period["start_date"], period["end_date"])
+        lot_number = period["lot_value"] if period["filter_type"] == "lot" else None
+        data = report5_repeated_passes(
+            period["start_date"], period["end_date"], lot_number=lot_number
+        )
 
-        if period["filter_type"] == "lot" and period["lot_value"]:
-            lot_value = period["lot_value"]
-            data = [d for d in data if lot_value.lower() in (d.get("lot_number") or "").lower()]
+        if lot_number:
+            data = [d for d in data if lot_number.lower() in (d.get("lot_number") or "").lower()]
 
         sort_field, sort_dir = get_sort_params(request, "report5")
         if sort_field:
@@ -1352,7 +1359,11 @@ class Report4ExportView(_ExcelExportBase):
 
         sort_field, sort_dir = get_sort_params(request, "report4")
         limit = 30 if not lot_filter and not sort_field and filter_type == "30d" else None
-        data = report4_defects(start_date, end_date, defect_filter=defect_filter, limit=limit)
+        data = report4_defects(
+            start_date, end_date,
+            defect_filter=defect_filter, limit=limit,
+            lot_number=lot_filter or None,
+        )
         if lot_filter:
             data = [d for d in data if lot_filter.lower() in (d.get("lot_number") or "").lower()]
 
@@ -1385,11 +1396,13 @@ class Report4ExportView(_ExcelExportBase):
 class Report5ExportView(_ExcelExportBase):
     def get(self, request):
         period = _report5_period(request)
-        data = report5_repeated_passes(period["start_date"], period["end_date"])
+        lot_number = period["lot_value"] if period["filter_type"] == "lot" else None
+        data = report5_repeated_passes(
+            period["start_date"], period["end_date"], lot_number=lot_number
+        )
 
-        if period["filter_type"] == "lot" and period["lot_value"]:
-            lot_value = period["lot_value"]
-            data = [d for d in data if lot_value.lower() in (d.get("lot_number") or "").lower()]
+        if lot_number:
+            data = [d for d in data if lot_number.lower() in (d.get("lot_number") or "").lower()]
 
         sort_field, sort_dir = get_sort_params(request, "report5")
         if sort_field:

@@ -91,6 +91,24 @@ def test_report1_no_data():
 
 
 @pytest.mark.django_db
+def test_report1_orders_lot_info_loaded_in_one_query(django_assert_num_queries):
+    """Отчёт №1 не делает отдельный запрос LotInfo на каждый лот (N+1)."""
+    dt = timezone.make_aware(datetime(2026, 4, 1, 9, 0))
+    ProductionRecord.objects.bulk_create([
+        ProductionRecord(
+            lot_number=f"LOT-Q{index}", subop_no=10, pcs_no=f"SN-Q{index}",
+            created_date=dt, result="OK", production_spec="SPEC",
+        )
+        for index in range(5)
+    ])
+
+    with django_assert_num_queries(2):
+        data = report1_orders(date(2026, 4, 1), date(2026, 4, 30))
+
+    assert len(data) == 5
+
+
+@pytest.mark.django_db
 def test_report2_line_productivity():
     """Проверка расчетов Report 2."""
     dt_start = timezone.make_aware(datetime(2026, 8, 13, 10, 0, 0))
@@ -330,6 +348,51 @@ def test_report5_export_has_summary_sheet():
 
 
 @pytest.mark.django_db
+def test_report5_lot_filter_applied_in_sql():
+    """Фильтр по лоту применяется в SQL (ILIKE), а не только после выборки."""
+    from django.db import connection
+    from django.test.utils import CaptureQueriesContext
+
+    dt = timezone.make_aware(datetime(2026, 6, 15, 9, 0))
+    for lot, pcs_no in (("LOT-SQL-A", "SN-SQL-A"), ("LOT-SQL-B", "SN-SQL-B")):
+        for offset in (0, 5):
+            ProductionRecord.objects.create(
+                lot_number=lot, subop_no=20, pcs_no=pcs_no,
+                created_date=dt + timedelta(minutes=offset), result="OK",
+                production_spec="SPEC",
+            )
+
+    with CaptureQueriesContext(connection) as ctx:
+        data = report5_repeated_passes(
+            date(2026, 6, 1), date(2026, 6, 30), lot_number="LOT-SQL-A"
+        )
+
+    sql_text = " ".join(query["sql"] for query in ctx.captured_queries)
+    assert "ILIKE" in sql_text
+    assert [row["lot_number"] for row in data] == ["LOT-SQL-A"]
+
+
+@pytest.mark.django_db
+def test_report5_view_passes_lot_to_query(monkeypatch):
+    """Report5View передаёт лот в report5_repeated_passes при фильтре «По лоту»."""
+    from reports import views
+
+    captured = {}
+
+    def fake_query(start_date=None, end_date=None, limit=None, lot_number=None):
+        captured["lot_number"] = lot_number
+        return []
+
+    monkeypatch.setattr(views, "report5_repeated_passes", fake_query)
+
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        response = Client().get("/reports/5/", {"filter": "lot", "lot": "LOT-XY"})
+
+    assert response.status_code == 200
+    assert captured["lot_number"] == "LOT-XY"
+
+
+@pytest.mark.django_db
 def test_report4_last_ok_station_and_sn_comment():
     start = date(2026, 9, 1)
     end = date(2026, 9, 30)
@@ -501,6 +564,49 @@ def test_report4_manual_defects_not_truncated_to_50():
 
     manual_rows = [row for row in data if row["is_manual"]]
     assert len(manual_rows) == 55
+
+
+@pytest.mark.django_db
+def test_report4_lot_filter_applied_in_sql():
+    """Фильтр по лоту в отчёте №4 применяется в SQL (ILIKE)."""
+    from django.db import connection
+    from django.test.utils import CaptureQueriesContext
+
+    dt = timezone.make_aware(datetime(2026, 9, 5, 9, 0))
+    for lot, pcs_no in (("LOT-DEF-A", "SN-DEF-A"), ("LOT-DEF-B", "SN-DEF-B")):
+        ProductionRecord.objects.create(
+            lot_number=lot, subop_no=10, pcs_no=pcs_no,
+            created_date=dt, result="OK", production_spec="SPEC", defect=True,
+        )
+
+    with CaptureQueriesContext(connection) as ctx:
+        data = report4_defects(
+            date(2026, 9, 1), date(2026, 9, 30), lot_number="LOT-DEF-A"
+        )
+
+    sql_text = " ".join(query["sql"] for query in ctx.captured_queries)
+    assert "ILIKE" in sql_text
+    assert [row["pcs_no"] for row in data] == ["SN-DEF-A"]
+
+
+@pytest.mark.django_db
+def test_report4_view_passes_lot_to_query(monkeypatch):
+    """Report4View передаёт лот в report4_defects, а не фильтрует после выборки."""
+    from reports import views
+
+    captured = {}
+
+    def fake_defects(*args, **kwargs):
+        captured["lot_number"] = kwargs.get("lot_number")
+        return []
+
+    monkeypatch.setattr(views, "report4_defects", fake_defects)
+
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        response = Client().get("/reports/4/", {"filter": "year", "lot": "LOT-ZZ"})
+
+    assert response.status_code == 200
+    assert captured["lot_number"] == "LOT-ZZ"
 
 
 @pytest.mark.django_db
@@ -1086,6 +1192,21 @@ def test_apply_sort_none_values():
         ["name"],
     )
     assert [r["name"] for r in mixed] == [2, 10, "a", "B", None]
+
+
+def test_apply_sort_large_list_keeps_none_last():
+    """apply_sort обрабатывает большие списки и по-прежнему ставит None в конец."""
+    data = [
+        {"n": index, "value": None if index % 10 == 0 else index}
+        for index in range(5000)
+    ]
+
+    result = apply_sort(data, "value", "asc", ["value"])
+
+    values = [item["value"] for item in result]
+    assert len(values) == 5000
+    assert values[-500:] == [None] * 500
+    assert values[:-500] == sorted(values[:-500])
 
 
 def test_apply_sort_invalid_field():

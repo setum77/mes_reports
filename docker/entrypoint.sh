@@ -9,14 +9,18 @@ uv run python src/manage.py migrate --noinput
 echo "Collecting static files..."
 uv run python src/manage.py collectstatic --noinput
 
-echo "Creating superuser (if not exists)..."
-uv run python src/manage.py shell -c "
+if [ -n "${DJANGO_ADMIN_PASSWORD}" ]; then
+    echo "Creating superuser (if not exists)..."
+    uv run python src/manage.py shell -c "
 import os
 from django.contrib.auth import get_user_model
 u = get_user_model()
 if not u.objects.filter(username='admin').exists():
-    u.objects.create_superuser('admin', 'admin@localhost', os.environ.get('DJANGO_ADMIN_PASSWORD', 'admin123'))
+    u.objects.create_superuser('admin', 'admin@localhost', os.environ['DJANGO_ADMIN_PASSWORD'])
 "
+else
+    echo "DJANGO_ADMIN_PASSWORD is not set — superuser creation skipped."
+fi
 
 echo "Starting server..."
 exec uv run gunicorn mes_report3.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 120 --max-requests 1000 --max-requests-jitter 50 --preload

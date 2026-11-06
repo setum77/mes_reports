@@ -180,6 +180,12 @@ def report1_orders(start_date=None, end_date=None):
         cursor.execute(sql, final_params)
         rows = dictfetchall(cursor)
 
+    from production.models import LotInfo
+
+    lot_infos = LotInfo.objects.in_bulk(
+        [row["lot_number"] for row in rows], field_name="lot_number"
+    )
+
     results = []
     for i, row in enumerate(rows, 1):
         production = row["production"]
@@ -188,8 +194,7 @@ def report1_orders(start_date=None, end_date=None):
         defect_count = row["defect_count"]
         defect_display = row["defect_sns"] if defect_count < 10 else "SN не прошедших сборку более 10 штук"
 
-        from production.models import LotInfo
-        lot_info = LotInfo.objects.filter(lot_number=row["lot_number"]).first()
+        lot_info = lot_infos.get(row["lot_number"])
 
         results.append({
             "N": i,
@@ -468,7 +473,7 @@ def _report4_last_ok_rows(pcs_numbers):
         }
 
 
-def report4_defects(start_date=None, end_date=None, defect_filter='defect', limit=None):
+def report4_defects(start_date=None, end_date=None, defect_filter='defect', limit=None, lot_number=None):
     """
     Отчет 4: Брак.
 
@@ -477,14 +482,24 @@ def report4_defects(start_date=None, end_date=None, defect_filter='defect', limi
       'in_progress' — SN прошли 010 с OK, но не прошли 130 с OK + ручные браки.
 
     limit: если задан, ограничивает количество записей (для "последних N").
+    lot_number: необязательный фильтр по номеру лота (подстрока,
+    регистронезависимо), применяется в SQL.
     """
     from production.models import ManualDefect, SNComment, SNPhoto
 
     params = []
-    date_clause = ""
+    filter_conditions = []
     if start_date and end_date:
-        date_clause = "AND r.created_date::date >= %s AND r.created_date::date <= %s"
+        filter_conditions.append(
+            "r.created_date::date >= %s AND r.created_date::date <= %s"
+        )
         params.extend([start_date, end_date])
+    if lot_number:
+        filter_conditions.append("r.lot_number ILIKE %s")
+        params.append(f"%{lot_number}%")
+
+    filter_sql = " AND ".join(filter_conditions)
+    filter_clause = f"AND {filter_sql}" if filter_sql else ""
 
     limit_clause = "LIMIT %s" if limit else ""
     if limit:
@@ -505,7 +520,7 @@ def report4_defects(start_date=None, end_date=None, defect_filter='defect', limi
                     MIN(r.created_date) AS entry_date
                 FROM production_productionrecord AS r
                 WHERE r.defect = TRUE
-                  {date_clause}
+                  {filter_clause}
                 GROUP BY r.pcs_no, r.production_spec, r.lot_number
             ) AS p
             ORDER BY p.entry_date DESC
@@ -527,7 +542,7 @@ def report4_defects(start_date=None, end_date=None, defect_filter='defect', limi
                 FROM production_productionrecord AS r
                 WHERE r.subop_no = {STATION_FOL_START}
                   AND UPPER(TRIM(COALESCE(r.result, ''))) = 'OK'
-                  {date_clause}
+                  {filter_clause}
                   AND NOT EXISTS (
                       SELECT 1
                       FROM production_productionrecord AS completed
@@ -551,6 +566,8 @@ def report4_defects(start_date=None, end_date=None, defect_filter='defect', limi
             entry_date__date__gte=start_date,
             entry_date__date__lte=end_date,
         )
+    if lot_number:
+        manual_defects = manual_defects.filter(lot_number__icontains=lot_number)
     manual_defects = manual_defects.order_by("-created_at")
     if limit:
         manual_defects = manual_defects[:limit]
@@ -623,13 +640,16 @@ def report4_defects(start_date=None, end_date=None, defect_filter='defect', limi
     return rows + manual_data
 
 
-def report5_repeated_passes(start_date=None, end_date=None, limit=None):
+def report5_repeated_passes(start_date=None, end_date=None, limit=None, lot_number=None):
     """
     Отчет 5: Повторные проходы станций.
     BU прошедшие какую-либо станцию более одного раза.
 
     limit: необязательное ограничение количества строк. По умолчанию не
     применяется — отчёт показывает все повторы выбранного периода.
+
+    lot_number: необязательный фильтр по номеру лота (подстрока,
+    регистронезависимо). Применяется в SQL, а не после выборки.
 
     Возвращает строки с полями: pcs_no, lot_number, production_spec, station,
     station_name, position_no, workstation_name, dates, passes_count,
@@ -639,15 +659,23 @@ def report5_repeated_passes(start_date=None, end_date=None, limit=None):
     """
     from production.models import ManualDefect, ProductionRecord, SNComment
 
-    date_clause = ""
+    date_conditions = []
+    date_params = []
     if start_date and end_date:
-        date_clause = "created_date::date >= %s AND created_date::date <= %s"
+        date_conditions.append("created_date::date >= %s AND created_date::date <= %s")
         date_params = [start_date, end_date]
-    else:
-        date_params = []
+
+    lot_params = [f"%{lot_number}%"] if lot_number else []
+
+    def where_for(alias):
+        conditions = list(date_conditions)
+        if lot_number:
+            conditions.append(f"{alias}.lot_number ILIKE %s")
+        return f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
     limit_clause = f"LIMIT {limit}" if limit else ""
-    where_clause = f"WHERE {date_clause}" if date_clause else ""
+    cte_where = where_for("r")
+    join_where = where_for("rr")
 
     sql = f"""
         WITH repeated AS (
@@ -655,7 +683,7 @@ def report5_repeated_passes(start_date=None, end_date=None, limit=None):
                    MAX(position_no) as position_no,
                    MAX(workstation_name) as workstation_name
             FROM production_productionrecord r
-            {where_clause}
+            {cte_where}
             GROUP BY pcs_no, lot_number, production_spec, subop_no
             HAVING COUNT(*) > 1
         )
@@ -673,12 +701,13 @@ def report5_repeated_passes(start_date=None, end_date=None, limit=None):
             COUNT(rr.id) as passes_count
         FROM repeated r
         JOIN production_productionrecord rr ON rr.pcs_no = r.pcs_no AND rr.subop_no = r.subop_no
-        {where_clause}
+        {join_where}
         GROUP BY r.pcs_no, r.lot_number, r.production_spec, r.subop_no, r.position_no, r.workstation_name
         ORDER BY r.pcs_no, r.subop_no
         {limit_clause}
     """
-    params = date_params + [settings.TIME_ZONE] + date_params
+    filter_params = date_params + lot_params
+    params = filter_params + [settings.TIME_ZONE] + filter_params
     with connection.cursor() as cursor:
         cursor.execute(sql, params)
         rows = dictfetchall(cursor)
