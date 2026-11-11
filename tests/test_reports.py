@@ -20,8 +20,15 @@ from django.utils import timezone
 from openpyxl import load_workbook
 
 from mes_report3.admin_site import mes_admin_site
-from production.admin import LotInfoAdmin, ProductionRecordAdmin
-from production.models import LotInfo, ManualDefect, ProductionRecord, SNComment, SNPhoto
+from production.admin import LotAdmin, ProductionAdmin
+from production.models import ControlUnit, Lot, Production, UnitPhoto
+from tests._legacy import (
+    LotInfo,
+    ManualDefect,
+    ProductionRecord,
+    SNComment,
+    SNPhoto,
+)
 from reports.queries import (
     report1_orders,
     report2_line_productivity,
@@ -1113,17 +1120,17 @@ def test_dedup_on_reimport():
     """Повторная загрузка не создает дублей."""
     dt = timezone.make_aware(datetime(2026, 8, 13, 10, 0, 0))
     records = [
-        ProductionRecord(
-            lot_number="LOT-001", subop_no=10, created_date=dt,
-            pcs_no="PCS1", result="OK", production_spec="SPEC"
-        ),
+        {
+            "lot_number": "LOT-001", "subop_no": 10, "created_date": dt,
+            "pcs_no": "PCS1", "result": "OK", "production_spec": "SPEC",
+        },
     ]
     from uploads.excel_parser import import_to_database
-    result1 = import_to_database(records)
-    result2 = import_to_database(records)
+    result1 = import_to_database(records, "test.xlsx")
+    result2 = import_to_database(records, "test.xlsx")
     assert result1["inserted"] == 1
     assert result2["inserted"] == 0
-    assert ProductionRecord.objects.count() == 1
+    assert Production.objects.count() == 1
 
 
 # ========================
@@ -1277,23 +1284,23 @@ def test_report1_sort_by_production():
 
     ProductionRecord.objects.create(
         lot_number="LOT-B", subop_no=10, created_date=dt1,
-        pcs_no="PCS1", result="OK", production_spec="SPEC"
+        pcs_no="PCS-B1", result="OK", production_spec="SPEC"
     )
     ProductionRecord.objects.create(
         lot_number="LOT-B", subop_no=130, created_date=dt4,
-        pcs_no="PCS1", result="OK", production_spec="SPEC"
+        pcs_no="PCS-B1", result="OK", production_spec="SPEC"
     )
     ProductionRecord.objects.create(
         lot_number="LOT-A", subop_no=10, created_date=dt2,
-        pcs_no="PCS1", result="OK", production_spec="SPEC"
+        pcs_no="PCS-A1", result="OK", production_spec="SPEC"
     )
     ProductionRecord.objects.create(
         lot_number="LOT-A", subop_no=10, created_date=dt3,
-        pcs_no="PCS2", result="OK", production_spec="SPEC"
+        pcs_no="PCS-A2", result="OK", production_spec="SPEC"
     )
     ProductionRecord.objects.create(
         lot_number="LOT-A", subop_no=130, created_date=dt4,
-        pcs_no="PCS2", result="OK", production_spec="SPEC"
+        pcs_no="PCS-A2", result="OK", production_spec="SPEC"
     )
 
     data = report1_orders()
@@ -1343,11 +1350,11 @@ def test_report7_station130_output_filters_and_deduplicates():
     start_date = date(2026, 9, 14)
     end_date = date(2026, 9, 20)
     records = [
-        ProductionRecord(
-            lot_number="LOT-A", subop_no=130, pcs_no="SN-DUP",
-            production_spec="SPEC-A", result="OK",
-            created_date=timezone.make_aware(datetime(2026, 9, 15, 10, 0)),
-        ),
+            ProductionRecord(
+                lot_number="LOT-B", subop_no=130, pcs_no="SN-DUP",
+                production_spec="SPEC-B", result="OK",
+                created_date=timezone.make_aware(datetime(2026, 9, 15, 10, 0)),
+            ),
         ProductionRecord(
             lot_number="LOT-B", subop_no=130, pcs_no="SN-DUP",
             production_spec="SPEC-B", result="OK",
@@ -2307,7 +2314,7 @@ def test_admin_staff_sees_business_models_but_not_auth_models():
             for app in app_list
             for model in app["models"]
         }
-        assert {"ProductionRecord", "LotInfo", "ManualDefect"} <= model_names
+        assert {"Production", "Lot", "ControlUnit"} <= model_names
         assert "User" not in model_names
         assert "Group" not in model_names
         assert not any(app["app_label"] == "auth" for app in app_list)
@@ -2344,7 +2351,7 @@ def test_admin_manual_defect_search_uses_existing_fields():
         user = User.objects.create_superuser("admin_search", "search@example.com", "pw")
         client = Client()
         client.force_login(user)
-        response = client.get("/admin/production/manualdefect/", {"q": "SN-ADMIN-SEARCH"})
+        response = client.get("/admin/production/controlunit/", {"q": "SN-ADMIN-SEARCH"})
 
     assert response.status_code == 200
     assert "SN-ADMIN-SEARCH" in response.content.decode()
@@ -2354,7 +2361,7 @@ def test_admin_manual_defect_search_uses_existing_fields():
 def test_admin_production_record_is_read_only_for_staff():
     request = RequestFactory().get("/admin/")
     request.user = User(is_active=True, is_staff=True, is_superuser=False)
-    model_admin = ProductionRecordAdmin(ProductionRecord, mes_admin_site)
+    model_admin = ProductionAdmin(Production, mes_admin_site)
 
     assert model_admin.has_view_permission(request)
     assert not model_admin.has_add_permission(request)
@@ -2366,11 +2373,11 @@ def test_admin_production_record_is_read_only_for_staff():
 def test_admin_lot_number_is_editable_on_create_and_read_only_on_change():
     request = RequestFactory().get("/admin/")
     request.user = User(is_active=True, is_staff=True, is_superuser=False)
-    model_admin = LotInfoAdmin(LotInfo, mes_admin_site)
+    model_admin = LotAdmin(Lot, mes_admin_site)
 
-    assert "lot_number" not in model_admin.get_readonly_fields(request, obj=None)
-    lot = LotInfo(lot_number="LOT-ADMIN")
-    assert "lot_number" in model_admin.get_readonly_fields(request, obj=lot)
+    assert "number" not in model_admin.get_readonly_fields(request, obj=None)
+    lot = Lot(number="LOT-ADMIN")
+    assert "number" in model_admin.get_readonly_fields(request, obj=lot)
 
 
 @pytest.mark.django_db
@@ -2388,14 +2395,14 @@ def test_admin_audit_fields_are_set_on_create():
         client = Client()
         client.force_login(user)
         defect_pcs_no = f"ADMIN-DEFECT-{user.pk}"
+        lot = Lot.objects.create(number="LOT-ADMIN")
 
         defect_response = client.post(
-            "/admin/production/manualdefect/add/",
+            "/admin/production/controlunit/add/",
             {
-                "pcs_no": defect_pcs_no,
-                "production_spec": "SPEC-ADMIN",
-                "lot_number": "LOT-ADMIN",
-                "entry_date": "2026-01-01T12:00:00",
+                "sn": defect_pcs_no,
+                "lot": lot.pk,
+                "defect": "on",
                 "_save": "Save",
             },
         )
@@ -2463,9 +2470,9 @@ def test_admin_dashboard_has_links_and_aggregate_metrics():
         assert "План: 25" in content
         assert "За 7 дней:" in content
         for url_name in (
-            "mes_admin:production_lotinfo_changelist",
-            "mes_admin:production_productionrecord_changelist",
-            "mes_admin:production_manualdefect_changelist",
+            "mes_admin:production_lot_changelist",
+            "mes_admin:production_production_changelist",
+            "mes_admin:production_controlunit_changelist",
             "reports:report1",
             "reports:report7",
             "uploads:upload_home",

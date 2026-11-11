@@ -2,118 +2,281 @@ from django.db import models
 from django.utils import timezone
 
 
-class ProductionRecord(models.Model):
-    """
-    Сырой запись из выгрузки MES системы.
-    Каждая запись = одно прохождение станции БУ.
-    """
-    lot_number = models.CharField("Номер лота", max_length=50, db_index=True)
-    opno = models.CharField("opno", max_length=50, blank=True, null=True)
-    op_name = models.CharField("Название операции", max_length=200, blank=True, null=True)
-    production_no = models.CharField("Номер производства", max_length=100, blank=True, null=True)
-    production_version = models.IntegerField("Версия производства", blank=True, null=True)
-    product_type = models.CharField("Тип продукта", max_length=100, blank=True, null=True)
-    production_name = models.CharField("Название производства", max_length=200, blank=True, null=True)
-    production_spec = models.CharField("Спецификация", max_length=200, blank=True, null=True)
-    subop_sequence = models.IntegerField("Порядковый номер субоперации", blank=True, null=True)
-    subop_no = models.IntegerField("Номер станции", db_index=True)
-    subop_name = models.CharField("Название станции", max_length=200, blank=True, null=True)
-    position_no = models.CharField("Номер позиции", max_length=50, blank=True, null=True)
-    workstation_name = models.CharField("Имя станции", max_length=200, blank=True, null=True)
-    pcs_no = models.CharField("Серийный номер БУ", max_length=100, db_index=True)
-    user_name = models.CharField("Имя пользователя", max_length=100, blank=True, null=True)
-    created_date = models.DateTimeField("Дата и время прохождения", db_index=True)
-    working_hours = models.IntegerField("Рабочие часы", blank=True, null=True)
-    result = models.CharField("Результат", max_length=20, blank=True, null=True)
-    test_data = models.TextField("Тестовые данные", blank=True, null=True)
-    defect = models.BooleanField("Defect — брак", default=False)
+class ControlUnit(models.Model):
+    """Блок управления (БУ). Может существовать без записей производства."""
 
-    class Meta:
-        verbose_name = "Запись производства"
-        verbose_name_plural = "Записи производства"
-        unique_together = ("pcs_no", "subop_no", "created_date")
-        ordering = ["created_date"]
-        indexes = [
-            models.Index(fields=["pcs_no", "subop_no"]),
-        ]
-
-    def __str__(self):
-        return f"{self.pcs_no} | станция {self.subop_no} | {self.created_date}"
-
-
-class LotInfo(models.Model):
-    """
-    Метаданные лота с редактируемыми полями (Total, comment — для отчета 1).
-    """
-    lot_number = models.CharField("Номер лота", max_length=50, unique=True)
-    production_spec = models.CharField("Спецификация", max_length=200, blank=True, null=True)
-    plan_total = models.PositiveIntegerField("Плановое количество (Total)", null=True, blank=True)
+    sn = models.CharField("Серийный номер БУ", max_length=100, unique=True)
+    lot = models.ForeignKey(
+        "Lot",
+        verbose_name="Лот",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="units",
+    )
     comment = models.TextField("Комментарий", blank=True, default="")
-    updated_at = models.DateTimeField("Дата изменения", auto_now=True)
-
-    class Meta:
-        verbose_name = "Информация о лоте"
-        verbose_name_plural = "Информация о лотах"
-        ordering = ["-lot_number"]
-
-    def __str__(self):
-        return self.lot_number
-
-
-class ManualDefect(models.Model):
-    """
-    Ручные записи о браке (для отчета 4).
-    Созданы администратором и сохраняются навсегда.
-    """
-    pcs_no = models.CharField("Серийный номер БУ", max_length=100)
-    production_spec = models.CharField("Спецификация", max_length=200, blank=True, null=True)
-    lot_number = models.CharField("Номер лота", max_length=50, blank=True, null=True)
-    entry_date = models.DateTimeField("Дата поступления в производство", blank=True, null=True)
-    created_by = models.CharField("Кто добавил", max_length=100, blank=True)
-    created_at = models.DateTimeField("Создано", auto_now_add=True)
-
-    class Meta:
-        verbose_name = "Ручной брак"
-        verbose_name_plural = "Ручные браки"
-        ordering = ["-created_at"]
-
-    def __str__(self):
-        return f"{self.pcs_no} (брак)"
-
-
-class SNComment(models.Model):
-    pcs_no = models.CharField("Серийный номер БУ", max_length=100, unique=True)
-    comment = models.TextField("Комментарий", blank=True, default="")
-    created_by = models.CharField("Кто добавил", max_length=100, blank=True)
+    defect = models.BooleanField("Брак (defect)", default=False)
+    entry_date = models.DateTimeField(
+        "Дата поступления в производство", null=True, blank=True
+    )
+    created_by = models.CharField("Кто добавил", max_length=100, blank=True, default="")
     created_at = models.DateTimeField("Создано", auto_now_add=True)
     updated_at = models.DateTimeField("Изменено", auto_now=True)
 
     class Meta:
-        verbose_name = "Комментарий SN"
-        verbose_name_plural = "Комментарии SN"
+        verbose_name = "Блок управления (БУ)"
+        verbose_name_plural = "Блоки управления (БУ)"
         ordering = ["-updated_at"]
 
     def __str__(self):
-        return self.pcs_no
+        return self.sn
+
+    @property
+    def pcs_no(self):
+        return self.sn
+
+    @property
+    def lot_number(self):
+        return self.lot.number if self.lot else ""
+
+    @property
+    def production_spec(self):
+        return self.lot.production_spec if self.lot else ""
+
+    @property
+    def resolved_entry_date(self):
+        if self.entry_date:
+            return self.entry_date
+        first = self.production_records.order_by("created_date").first()
+        return first.created_date if first else self.created_at
 
 
-class SNPhoto(models.Model):
-    """
-    Фотографии, привязанные к серийному номеру БУ (для отчётов №4 и №6).
-    """
-    pcs_no = models.CharField("Серийный номер БУ", max_length=100, db_index=True)
-    image = models.FileField("Фотография", upload_to="sn_photos/%Y/%m/%d/")
-    caption = models.CharField("Подпись / имя", max_length=255, blank=True, default="")
-    uploaded_by = models.CharField("Кто загрузил", max_length=100, blank=True)
+class Lot(models.Model):
+    """Лот производства."""
+
+    number = models.CharField("Лот", max_length=50, unique=True)
+    production_spec = models.CharField(
+        "Спецификация (Production spec.)", max_length=200, blank=True, default=""
+    )
+    total = models.PositiveIntegerField(
+        "Заявленное количество (total)", blank=True, null=True
+    )
+    comment = models.TextField("Комментарий", blank=True, default="")
+    created_at = models.DateTimeField("Создано", auto_now_add=True)
+    updated_at = models.DateTimeField("Изменено", auto_now=True)
+
+    class Meta:
+        verbose_name = "Лот"
+        verbose_name_plural = "Лоты"
+        ordering = ["-number"]
+
+    def __str__(self):
+        return self.number
+
+
+class Station(models.Model):
+    """Станция производства: номер, PositionNo и названия на трёх языках."""
+
+    number = models.IntegerField("Номер станции (Subop no)", unique=True)
+    position_no = models.CharField("PositionNo", max_length=20, blank=True, default="")
+    name_zh = models.CharField(
+        "Название (китайский)", max_length=200, blank=True, default=""
+    )
+    name_en = models.CharField(
+        "Название (английский)", max_length=200, blank=True, default=""
+    )
+    name_ru = models.CharField(
+        "Название (русский)", max_length=200, blank=True, default=""
+    )
+    sort_order = models.PositiveIntegerField("Порядок на линии", default=0)
+    is_active = models.BooleanField("Активна", default=True)
+
+    class Meta:
+        verbose_name = "Станция производства"
+        verbose_name_plural = "Станции производства"
+        ordering = ["sort_order", "number"]
+
+    def __str__(self):
+        return f"{self.number:03d} {self.name_en or self.name_ru or self.name_zh}"
+
+
+class TestDataTranslation(models.Model):
+    """Правило перевода фрагмента testData с китайского на русский."""
+
+    source = models.CharField("Китайский фрагмент", max_length=255, unique=True)
+    target = models.CharField("Русский перевод", max_length=300)
+    is_active = models.BooleanField("Активен", default=True)
+    comment = models.CharField("Примечание", max_length=255, blank=True, default="")
+
+    class Meta:
+        verbose_name = "Перевод testData"
+        verbose_name_plural = "Переводы testData"
+        ordering = ["source"]
+
+    def __str__(self):
+        return f"{self.source} → {self.target}"
+
+
+class FaultJournal(models.Model):
+    """Запись журнала неисправностей."""
+
+    STATUS_RESOLVED = "resolved"
+    STATUS_UNRESOLVED = "unresolved"
+    STATUS_PARTIAL = "partial"
+    STATUS_CHOICES = [
+        (STATUS_RESOLVED, "Проблема решена"),
+        (STATUS_UNRESOLVED, "Проблема не решена"),
+        (STATUS_PARTIAL, "Проблема решена частично"),
+    ]
+
+    date = models.DateField("Дата")
+    detected_at = models.DateTimeField("Время обнаружения", null=True, blank=True)
+    equipment = models.CharField("Оборудование", max_length=200)
+    description = models.TextField("Описание неисправности")
+    cause = models.TextField("Причина", blank=True, default="")
+    actions_taken = models.TextField("Принятые меры", blank=True, default="")
+    resolved_at = models.DateTimeField("Время устранения", null=True, blank=True)
+    status = models.CharField(
+        "Статус",
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_UNRESOLVED,
+    )
+    note = models.TextField("Примечание", blank=True, default="")
+    unit = models.ForeignKey(
+        ControlUnit,
+        verbose_name="БУ",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="faults",
+    )
+    lot = models.ForeignKey(
+        Lot,
+        verbose_name="Лот",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="faults",
+    )
+    station = models.ForeignKey(
+        Station,
+        verbose_name="Станция",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="faults",
+    )
+    created_by = models.CharField("Кто создал", max_length=100, blank=True, default="")
+    created_at = models.DateTimeField("Создано", auto_now_add=True)
+    updated_at = models.DateTimeField("Изменено", auto_now=True)
+
+    class Meta:
+        verbose_name = "Запись журнала неисправностей"
+        verbose_name_plural = "Журнал неисправностей"
+        ordering = ["-date", "-detected_at", "-created_at"]
+
+    def __str__(self):
+        return f"{self.date} — {self.equipment} — {self.status}"
+
+    @property
+    def duration(self):
+        if not self.resolved_at or not self.detected_at:
+            return None
+        return self.resolved_at - self.detected_at
+
+
+class FaultAttachment(models.Model):
+    """Фото/видео, приложенное к записи журнала неисправностей."""
+
+    KIND_PHOTO = "photo"
+    KIND_VIDEO = "video"
+    KIND_CHOICES = [
+        (KIND_PHOTO, "Фотография"),
+        (KIND_VIDEO, "Видео"),
+    ]
+
+    journal = models.ForeignKey(
+        FaultJournal,
+        verbose_name="Запись журнала",
+        on_delete=models.CASCADE,
+        related_name="attachments",
+    )
+    file = models.FileField("Файл", upload_to="fault_attachments/%Y/%m/%d/")
+    kind = models.CharField(
+        "Тип", max_length=10, choices=KIND_CHOICES, default=KIND_PHOTO
+    )
+    caption = models.CharField("Подпись", max_length=255, blank=True, default="")
+    uploaded_by = models.CharField("Кто загрузил", max_length=100, blank=True, default="")
     uploaded_at = models.DateTimeField("Загружено", auto_now_add=True)
 
     class Meta:
-        verbose_name = "Фотография SN"
-        verbose_name_plural = "Фотографии SN"
+        verbose_name = "Вложение журнала"
+        verbose_name_plural = "Вложения журнала"
         ordering = ["-uploaded_at"]
-        indexes = [
-            models.Index(fields=["pcs_no"]),
-        ]
 
     def __str__(self):
-        return f"{self.pcs_no} — {self.caption or self.image.name}"
+        return self.caption or self.file.name
+
+
+class UnitPhoto(models.Model):
+    """Фотография, привязанная к БУ."""
+
+    unit = models.ForeignKey(
+        ControlUnit,
+        verbose_name="БУ",
+        on_delete=models.CASCADE,
+        related_name="photos",
+    )
+    image = models.FileField("Фотография", upload_to="sn_photos/%Y/%m/%d/")
+    caption = models.CharField("Подпись / имя", max_length=255, blank=True, default="")
+    uploaded_by = models.CharField("Кто загрузил", max_length=100, blank=True, default="")
+    uploaded_at = models.DateTimeField("Загружено", auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Фотография БУ"
+        verbose_name_plural = "Фотографии БУ"
+        ordering = ["-uploaded_at"]
+
+    def __str__(self):
+        return self.caption or self.image.name
+
+    @property
+    def pcs_no(self):
+        return self.unit.sn
+
+
+class Production(models.Model):
+    """Прохождение блоком БУ станции производства."""
+
+    unit = models.ForeignKey(
+        ControlUnit,
+        verbose_name="БУ",
+        on_delete=models.CASCADE,
+        related_name="production_records",
+    )
+    station = models.ForeignKey(
+        Station,
+        verbose_name="Станция",
+        on_delete=models.PROTECT,
+        related_name="productions",
+    )
+    created_date = models.DateTimeField(
+        "Дата и время прохождения (CREATEDATE)", db_index=True
+    )
+    result = models.CharField("Результат (result)", max_length=20)
+    test_data = models.TextField("Тестовые данные (testData)", blank=True, default="")
+    test_data_ru = models.TextField("Тестовые данные (рус.)", blank=True, default="")
+
+    class Meta:
+        verbose_name = "Прохождение станции"
+        verbose_name_plural = "Прохождения станций"
+        ordering = ["created_date"]
+        indexes = [
+            models.Index(fields=["unit", "created_date"], name="production__unit_id_328638_idx"),
+            models.Index(fields=["station", "created_date"], name="production__station_414dd7_idx"),
+        ]
+        unique_together = ("unit", "station", "created_date")
+
+    def __str__(self):
+        return f"{self.unit_id} | {self.station_id} | {self.created_date}"

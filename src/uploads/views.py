@@ -8,7 +8,7 @@ from django.views.generic import TemplateView
 
 from accounts.views import admin_required
 from uploads.forms import UploadFileForm
-from uploads.excel_parser import parse_excel_file, import_to_database, ExcelParseError
+from uploads.excel_parser import parse_excel_file, import_to_database
 
 
 @method_decorator(admin_required, name="dispatch")
@@ -34,7 +34,7 @@ class UploadFileView(View):
             f = form.cleaned_data["file"]
             try:
                 records = parse_excel_file(f)
-            except ExcelParseError as e:
+            except ValueError as e:
                 messages.error(request, str(e))
                 return render(request, self.template_name, {"form": form})
             except Exception as e:
@@ -45,7 +45,7 @@ class UploadFileView(View):
                 messages.warning(request, "Файл не содержит данных для загрузки.")
                 return render(request, self.template_name, {"form": form})
 
-            result = import_to_database(records, created_by=getattr(request.user, "username", "system"))
+            result = import_to_database(records, f)
             return redirect("uploads:upload_success",
                             inserted=result["inserted"],
                             duplicates=result["duplicates"],

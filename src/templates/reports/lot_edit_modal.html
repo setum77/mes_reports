@@ -8,15 +8,20 @@
   <div class="row justify-content-center">
     <div class="col-md-6">
       <div class="card">
-        <div class="card-header"><h5 class="mb-0">Редактирование лота: {{ object.lot_number }}</h5></div>
+        <div class="card-header"><h5 class="mb-0">Редактирование лота: {{ object.number }}</h5></div>
         <div class="card-body">
           <form method="post">
             {% csrf_token %}
             {{ form.non_field_errors }}
             <div class="mb-3">
-              {{ form.plan_total|add_class:"form-control" }}
-              {{ form.plan_total.errors }}
-              <label class="form-label">Total (плановое количество)</label>
+              <label class="form-label">Спецификация</label>
+              {{ form.production_spec|add_class:"form-control" }}
+              {{ form.production_spec.errors }}
+            </div>
+            <div class="mb-3">
+              {{ form.total|add_class:"form-control" }}
+              {{ form.total.errors }}
+              <label class="form-label">Total (заявленное количество)</label>
             </div>
             <div class="mb-3">
               {{ form.comment|add_class:"form-control" }}

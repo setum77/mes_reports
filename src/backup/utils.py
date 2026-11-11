@@ -42,11 +42,14 @@ PROJECT_IDENTIFIER = "mes_reports"
 # Models managed by the production app — used for clearing, counting, and
 # sequence resetting.
 PRODUCTION_MODELS = [
-    "production.ProductionRecord",
-    "production.LotInfo",
-    "production.ManualDefect",
-    "production.SNComment",
-    "production.SNPhoto",
+    "production.Production",
+    "production.FaultAttachment",
+    "production.FaultJournal",
+    "production.UnitPhoto",
+    "production.ControlUnit",
+    "production.Lot",
+    "production.Station",
+    "production.TestDataTranslation",
 ]
 
 
@@ -105,7 +108,7 @@ def get_progress(task_id):
         if not path.exists():
             return None
         try:
-            return json.loads(path.read_text())
+            return json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return None
 
@@ -194,22 +197,23 @@ def _read_manifest(backup_dir):
     if not manifest_path.exists():
         return None
     try:
-        return json.loads(manifest_path.read_text())
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
 
 
 def create_db_dump(backup_dir):
-    """Create a JSON dump of all production app data (excluding auth/sessions)."""
+    """Create a UTF-8 JSON dump of all production app data."""
     db_dump_path = backup_dir / "database.json"
-    call_command(
-        "dumpdata",
-        "production",
-        "--natural-foreign",
-        "--natural-primary",
-        "--indent=2",
-        output=str(db_dump_path),
-    )
+    with open(db_dump_path, "w", encoding="utf-8") as dump_file:
+        call_command(
+            "dumpdata",
+            "production",
+            "--natural-foreign",
+            "--natural-primary",
+            "--indent=2",
+            stdout=dump_file,
+        )
     return db_dump_path
 
 
@@ -267,7 +271,7 @@ def create_full_backup(task_id=None):
     }
 
     manifest_path = backup_dir / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2))
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     if task_id:
         _set_progress(task_id, 4, "Готово!")
@@ -297,7 +301,7 @@ def list_backups():
             manifest_path = item / "manifest.json"
             if manifest_path.exists():
                 try:
-                    manifest = json.loads(manifest_path.read_text())
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                     backups.append(
                         {
                             "name": item.name,
@@ -387,7 +391,7 @@ def _restore_database(db_dump_path, task_id=None):
         return False, "Ошибка загрузки данных: {}".format(error_or_output)
 
     # Verify that data was actually loaded.
-    pr_model = apps.get_model("production", "productionrecord")
+    pr_model = apps.get_model("production", "production")
     loaded_count = pr_model.objects.count()
     total_counts = _get_model_counts()
     logger.info(
@@ -395,7 +399,7 @@ def _restore_database(db_dump_path, task_id=None):
     )
 
     if loaded_count == 0:
-        return False, "Данные не загружены: таблица ProductionRecord пуста после loaddata."
+        return False, "Данные не загружены: таблица Production пуста после loaddata."
 
     return True, "База данных восстановлена. Записей: {}".format(loaded_count)
 
@@ -722,7 +726,7 @@ def upload_and_restore(archive_file, task_id=None):
         db_size = db_dump_path.stat().st_size
         logger.info("[upload_and_restore] database.json size=%d bytes", db_size)
 
-        with open(db_dump_path, "r") as f:
+        with open(db_dump_path, "r", encoding="utf-8") as f:
             db_preview = f.read()[:500]
         logger.info("[upload_and_restore] database.json preview: %s", db_preview)
 
@@ -730,7 +734,7 @@ def upload_and_restore(archive_file, task_id=None):
         manifest = None
         for item in temp_dir.rglob("manifest.json"):
             try:
-                manifest = json.loads(item.read_text())
+                manifest = json.loads(item.read_text(encoding="utf-8"))
                 break
             except (json.JSONDecodeError, OSError):
                 pass
@@ -754,7 +758,7 @@ def upload_and_restore(archive_file, task_id=None):
             logger.info("[upload_and_restore] no manifest.json found in archive, proceeding without validation")
 
         # Count records before restore for logging.
-        pr_model_class = apps.get_model("production", "productionrecord")
+        pr_model_class = apps.get_model("production", "production")
         prod_count_before = pr_model_class.objects.count()
         logger.info("[upload_and_restore] records BEFORE loaddata: %d", prod_count_before)
 
@@ -812,10 +816,10 @@ def _restore_database_internal(db_dump_path, task_id=None):
     if not success:
         return False, "Ошибка загрузки данных: {}".format(error_or_output)
 
-    pr_model = apps.get_model("production", "productionrecord")
+    pr_model = apps.get_model("production", "production")
     loaded_count = pr_model.objects.count()
     if loaded_count == 0:
-        return False, "Данные не загружены: таблица ProductionRecord пуста после loaddata."
+        return False, "Данные не загружены: таблица Production пуста после loaddata."
 
     total_counts = _get_model_counts()
     logger.info("[_restore_database_internal] Loaded counts: %s", json.dumps(total_counts))

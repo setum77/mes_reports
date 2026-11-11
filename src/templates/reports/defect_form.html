@@ -16,19 +16,11 @@
             <div class="row g-3">
               <div class="col-md-6">
                 <label class="form-label">Серийный номер БУ</label>
-                {{ form.pcs_no|add_class:"form-control" }}
-              </div>
-              <div class="col-md-6">
-                <label class="form-label">Спецификация</label>
-                {{ form.production_spec|add_class:"form-control" }}
+                {{ form.sn|add_class:"form-control" }}
               </div>
               <div class="col-md-6">
                 <label class="form-label">Лот</label>
-                {{ form.lot_number|add_class:"form-control" }}
-              </div>
-              <div class="col-md-6">
-                <label class="form-label">Дата поступления в производство</label>
-                {{ form.entry_date|add_class:"form-control" }}
+                {{ form.lot|add_class:"form-control" }}
               </div>
               <div class="col-12">
                 <label class="form-label">Комментарий</label>

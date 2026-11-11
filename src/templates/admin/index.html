@@ -31,19 +31,19 @@
     <p class="mes-dashboard__intro">Оперативная панель производства и отчётов</p>
 
     <div class="mes-dashboard__grid">
-      <a class="mes-dashboard__card" href="{% url 'mes_admin:production_lotinfo_changelist' %}">
+      <a class="mes-dashboard__card" href="{% url 'mes_admin:production_lot_changelist' %}">
         <span class="mes-dashboard__label">Лоты</span>
         <strong>{{ dashboard_metrics.lots.total }}</strong>
         <span class="mes-dashboard__meta">План: {{ dashboard_metrics.lots.plan_total }}</span>
       </a>
 
-      <a class="mes-dashboard__card" href="{% url 'mes_admin:production_productionrecord_changelist' %}">
+      <a class="mes-dashboard__card" href="{% url 'mes_admin:production_production_changelist' %}">
         <span class="mes-dashboard__label">Записи производства</span>
         <strong>{{ dashboard_metrics.production_records.total }}</strong>
         <span class="mes-dashboard__meta">За {{ dashboard_metrics.recent_days }} дней: {{ dashboard_metrics.production_records.recent }}</span>
       </a>
 
-      <a class="mes-dashboard__card" href="{% url 'mes_admin:production_manualdefect_changelist' %}">
+      <a class="mes-dashboard__card" href="{% url 'mes_admin:production_controlunit_changelist' %}">
         <span class="mes-dashboard__label">Ручной брак</span>
         <strong>{{ dashboard_metrics.manual_defects.total }}</strong>
         <span class="mes-dashboard__meta">За {{ dashboard_metrics.recent_days }} дней: {{ dashboard_metrics.manual_defects.recent }}</span>

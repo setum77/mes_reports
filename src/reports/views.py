@@ -22,7 +22,7 @@ from django.views import View
 from django.views.generic import TemplateView, CreateView, UpdateView
 
 from accounts.views import admin_required
-from production.models import LotInfo, ManualDefect, ProductionRecord, SNComment, SNPhoto
+from production.models import ControlUnit, Lot, UnitPhoto
 from reports.queries import (
     _aggregate_monthly,
     get_date_range,
@@ -429,10 +429,10 @@ class Report1View(TemplateView):
 
 @method_decorator(admin_required, name="dispatch")
 class LotInfoUpdateView(UpdateView):
-    model = LotInfo
-    fields = ["plan_total", "comment"]
+    model = Lot
+    fields = ["production_spec", "total", "comment"]
     template_name = "reports/lot_edit_modal.html"
-    slug_field = "lot_number"
+    slug_field = "number"
     slug_url_kwarg = "lot_number"
 
     def get_success_url(self):
@@ -660,7 +660,7 @@ class Report4View(TemplateView):
         return response
 
 
-class ManualDefectForm(forms.ModelForm):
+class ControlUnitForm(forms.ModelForm):
     comment = forms.CharField(
         label="Комментарий",
         required=False,
@@ -668,65 +668,41 @@ class ManualDefectForm(forms.ModelForm):
     )
 
     class Meta:
-        model = ManualDefect
-        fields = ["pcs_no", "production_spec", "lot_number", "entry_date"]
-        widgets = {
-            "entry_date": forms.DateInput(attrs={"type": "date"}),
-        }
+        model = ControlUnit
+        fields = ["sn", "lot", "comment"]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields["production_spec"].required = False
-        self.fields["lot_number"].required = False
+        self.fields["lot"].required = False
 
 
 @method_decorator(admin_required, name="dispatch")
 class ManualDefectCreateView(CreateView):
-    model = ManualDefect
-    form_class = ManualDefectForm
+    model = ControlUnit
+    form_class = ControlUnitForm
     template_name = "reports/defect_form.html"
-
-    def get_form(self, form_class=None):
-        form = super().get_form(form_class)
-        specs = sorted(set(
-            ProductionRecord.objects.exclude(production_spec__isnull=True)
-            .exclude(production_spec="")
-            .values_list("production_spec", flat=True)
-        ))
-        lots = sorted(set(
-            ProductionRecord.objects.exclude(lot_number__isnull=True)
-            .exclude(lot_number="")
-            .values_list("lot_number", flat=True)
-        ))
-        form.fields["production_spec"].widget = forms.Select(
-            choices=[("", "—")] + [(s, s) for s in specs]
-        )
-        form.fields["lot_number"].widget = forms.Select(
-            choices=[("", "—")] + [(l, l) for l in lots]
-        )
-        return form
 
     def get_success_url(self):
         return reverse("reports:report4") + "?added=1"
 
     def form_valid(self, form):
-        form.instance.created_by = getattr(self.request.user, "username", "admin")
-        response = super().form_valid(form)
-        # Save comment to SNComment (shared with report6)
-        comment_text = form.cleaned_data.get("comment", "").strip()
-        if comment_text:
-            sn_comment, _ = SNComment.objects.get_or_create(pcs_no=form.instance.pcs_no)
-            sn_comment.comment = comment_text
-            if not sn_comment.created_by:
-                sn_comment.created_by = form.instance.created_by
-            sn_comment.save()
-        ProductionRecord.objects.filter(pcs_no=form.instance.pcs_no).update(defect=True)
-        return response
+        sn = form.cleaned_data["sn"].strip()
+        unit = ControlUnit.objects.filter(sn=sn).first()
+        if unit:
+            unit.lot = form.cleaned_data.get("lot")
+            unit.comment = form.cleaned_data.get("comment", "")
+            unit.defect = True
+            unit.save(update_fields=["lot", "comment", "defect"])
+        else:
+            form.instance.defect = True
+            response = super().form_valid(form)
+            return response
+        return redirect(f"{reverse('reports:report4')}?added=1")
 
 
 class SNCommentForm(forms.ModelForm):
     class Meta:
-        model = SNComment
+        model = ControlUnit
         fields = ["comment"]
 
 
@@ -737,28 +713,28 @@ class SNCommentEditView(View):
     def get(self, request, pcs_no):
         if not self._pcs_exists(pcs_no):
             raise Http404("Серийный номер не найден.")
-        comment = SNComment.objects.filter(pcs_no=pcs_no).first()
-        if comment is None:
-            comment = SNComment(pcs_no=pcs_no)
+        unit = ControlUnit.objects.filter(sn=pcs_no).first()
+        if unit is None:
+            unit = ControlUnit(sn=pcs_no)
         return render(
             request,
             self.template_name,
-            {"form": SNCommentForm(instance=comment), "pcs_no": pcs_no},
+            {"form": SNCommentForm(instance=unit), "pcs_no": pcs_no},
         )
 
     def post(self, request, pcs_no):
         if not self._pcs_exists(pcs_no):
             raise Http404("Серийный номер не найден.")
-        comment = SNComment.objects.filter(pcs_no=pcs_no).first()
-        if comment is None:
-            comment = SNComment(pcs_no=pcs_no)
-        form = SNCommentForm(request.POST, instance=comment)
+        unit = ControlUnit.objects.filter(sn=pcs_no).first()
+        if unit is None:
+            unit = ControlUnit(sn=pcs_no)
+        form = SNCommentForm(request.POST, instance=unit)
         if form.is_valid():
-            comment = form.save(commit=False)
-            comment.pcs_no = pcs_no
-            if not comment.created_by:
-                comment.created_by = request.user.get_username()
-            comment.save()
+            unit = form.save(commit=False)
+            unit.sn = pcs_no
+            if not unit.created_by:
+                unit.created_by = request.user.get_username()
+            unit.save()
             messages.success(request, "Комментарий сохранен.")
             return redirect(f"{reverse('reports:report6')}?pcs_no={pcs_no}")
         return render(
@@ -772,11 +748,8 @@ class SNCommentEditView(View):
     def _pcs_exists(pcs_no):
         return (
             bool(pcs_no)
-            and len(pcs_no) <= SNComment._meta.get_field("pcs_no").max_length
-            and (
-                ProductionRecord.objects.filter(pcs_no=pcs_no).exists()
-                or ManualDefect.objects.filter(pcs_no=pcs_no).exists()
-            )
+            and len(pcs_no) <= ControlUnit._meta.get_field("sn").max_length
+            and ControlUnit.objects.filter(sn=pcs_no).exists()
         )
 
 
@@ -938,24 +911,24 @@ REPORT6_DESCRIPTION = """\
 
 
 class SNSetDefectView(View):
-    """Установка/снятие флага Defect для всех записей ProductionRecord данного pcs_no (admin only)."""
+    """Установка/снятие флага Defect для БУ данного SN (admin only)."""
 
     def post(self, request, pcs_no):
         if not request.user.is_staff:
             return redirect("reports:report6")
         value = request.POST.get("value", "").lower() in ("1", "true", "on", "yes")
-        updated = ProductionRecord.objects.filter(pcs_no=pcs_no).update(defect=value)
+        updated = ControlUnit.objects.filter(sn=pcs_no).update(defect=value)
         if updated:
             messages.success(
                 request,
-                f"Defect установлен в {'True' if value else 'False'} для {updated} записей SN {pcs_no}."
+                f"Defect установлен в {'True' if value else 'False'} для {updated} БУ SN {pcs_no}."
             )
         else:
-            messages.warning(request, f"Не найдено записей для SN {pcs_no}.")
+            messages.warning(request, f"Не найдено БУ для SN {pcs_no}.")
         return redirect(f"{reverse('reports:report6')}?pcs_no={pcs_no}")
 
 
-class SNPhotoForm(forms.Form):
+class UnitPhotoForm(forms.Form):
     image = forms.FileField(label="Фотография")
     caption = forms.CharField(label="Подпись / имя", max_length=255, required=False)
 
@@ -966,10 +939,13 @@ class SNPhotoUploadView(View):
     def post(self, request, pcs_no):
         if not request.user.is_staff:
             return redirect("reports:report6")
-        form = SNPhotoForm(request.POST, request.FILES)
+        form = UnitPhotoForm(request.POST, request.FILES)
         if form.is_valid():
-            SNPhoto.objects.create(
-                pcs_no=pcs_no,
+            unit = ControlUnit.objects.filter(sn=pcs_no).first()
+            if unit is None:
+                unit = ControlUnit.objects.create(sn=pcs_no)
+            UnitPhoto.objects.create(
+                unit=unit,
                 image=form.cleaned_data["image"],
                 caption=form.cleaned_data["caption"],
                 uploaded_by=getattr(request.user, "username", "admin"),
@@ -991,17 +967,17 @@ class SNPhotoRenameView(View):
             return redirect("reports:report6")
         caption = request.POST.get("caption", "")
         try:
-            photo = SNPhoto.objects.get(pk=pk)
+            photo = UnitPhoto.objects.get(pk=pk)
             photo.caption = caption
             photo.save()
             messages.success(request, "Подпись обновлена.")
-        except SNPhoto.DoesNotExist:
+        except UnitPhoto.DoesNotExist:
             messages.error(request, "Фотография не найдена.")
             return redirect("reports:report6")
         next_url = request.POST.get("next") or request.GET.get("next")
         if next_url:
             return redirect(next_url)
-        return redirect(f"{reverse('reports:report6')}?pcs_no={photo.pcs_no}")
+        return redirect(f"{reverse('reports:report6')}?pcs_no={photo.unit.sn}")
 
 
 class SNPhotoDeleteView(View):
@@ -1011,12 +987,12 @@ class SNPhotoDeleteView(View):
         if not request.user.is_staff:
             return redirect("reports:report6")
         try:
-            photo = SNPhoto.objects.get(pk=pk)
-            pcs_no = photo.pcs_no
+            photo = UnitPhoto.objects.get(pk=pk)
+            pcs_no = photo.unit.sn
             photo.image.delete(save=False)
             photo.delete()
             messages.success(request, "Фотография удалена.")
-        except SNPhoto.DoesNotExist:
+        except UnitPhoto.DoesNotExist:
             messages.error(request, "Фотография не найдена.")
             return redirect("reports:report6")
         next_url = request.POST.get("next") or request.GET.get("next")
@@ -1034,8 +1010,8 @@ class Report6View(TemplateView):
         recent_sns_comments = {}
         if recent_sns:
             recent_sns_comments = dict(
-                SNComment.objects.filter(pcs_no__in=recent_sns)
-                .values_list("pcs_no", "comment")
+                ControlUnit.objects.filter(sn__in=recent_sns)
+                .values_list("sn", "comment")
             )
 
         data = []
@@ -1043,7 +1019,7 @@ class Report6View(TemplateView):
         exists = None
 
         if pcs_no:
-            exists = ProductionRecord.objects.filter(pcs_no=pcs_no).exists() or ManualDefect.objects.filter(pcs_no=pcs_no).exists()
+            exists = ControlUnit.objects.filter(sn=pcs_no).exists()
             if exists:
                 data = report6_serial_number(pcs_no)
                 summary = report6_summary(pcs_no)

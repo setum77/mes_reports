@@ -44,27 +44,28 @@ class MESAdminSite(AdminSite):
         return response
 
     def get_dashboard_metrics(self):
-        from production.models import LotInfo, ManualDefect, ProductionRecord
+        from production.models import ControlUnit, Lot, Production
 
         now = timezone.now()
         recent_cutoff = now - timedelta(days=7)
-        production = ProductionRecord.objects.aggregate(
+        production = Production.objects.aggregate(
             total=Count("id"),
             recent=Count("id", filter=Q(created_date__gte=recent_cutoff)),
             latest=Max("created_date"),
         )
-        lots = LotInfo.objects.aggregate(
-            total=Count("id"),
-            plan_total=Coalesce(Sum("plan_total"), Value(0)),
+        lots = Lot.objects.aggregate(
+            lots_count=Count("id"),
+            plan_total=Coalesce(Sum("total"), Value(0)),
         )
-        manual_defects = ManualDefect.objects.aggregate(
+        lots_total = lots["lots_count"]
+        manual_defects = ControlUnit.objects.filter(defect=True).aggregate(
             total=Count("id"),
             recent=Count("id", filter=Q(created_at__gte=recent_cutoff)),
             latest=Max("created_at"),
         )
         return {
             "lots": {
-                "total": lots["total"],
+                "total": lots_total,
                 "plan_total": lots["plan_total"],
             },
             "production_records": {

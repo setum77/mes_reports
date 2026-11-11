@@ -122,7 +122,7 @@ def report1_orders(start_date=None, end_date=None):
             SELECT lot_number, MAX(created_date) as dt
             FROM production_productionrecord
             {df_clause}
-            AND subop_no = %s AND result = 'OK'
+            AND subop_no = %s
             GROUP BY lot_number
         ),
         defect_cte AS (
@@ -180,10 +180,10 @@ def report1_orders(start_date=None, end_date=None):
         cursor.execute(sql, final_params)
         rows = dictfetchall(cursor)
 
-    from production.models import LotInfo
+    from production.models import Lot
 
-    lot_infos = LotInfo.objects.in_bulk(
-        [row["lot_number"] for row in rows], field_name="lot_number"
+    lot_infos = Lot.objects.in_bulk(
+        [row["lot_number"] for row in rows], field_name="number"
     )
 
     results = []
@@ -200,7 +200,7 @@ def report1_orders(start_date=None, end_date=None):
             "N": i,
             "LOT": row["lot_number"],
             "production_spec": lot_info.production_spec if lot_info else "",
-            "Total": lot_info.plan_total if lot_info else None,
+            "Total": lot_info.total if lot_info else None,
             "Production": production,
             "Ok": ok,
             "Diff": diff,
@@ -485,7 +485,7 @@ def report4_defects(start_date=None, end_date=None, defect_filter='defect', limi
     lot_number: необязательный фильтр по номеру лота (подстрока,
     регистронезависимо), применяется в SQL.
     """
-    from production.models import ManualDefect, SNComment, SNPhoto
+    from production.models import ControlUnit, UnitPhoto
 
     params = []
     filter_conditions = []
@@ -560,35 +560,42 @@ def report4_defects(start_date=None, end_date=None, defect_filter='defect', limi
         rows = dictfetchall(cursor)
 
     sql_pcs = {row["pcs_no"] for row in rows}
-    manual_defects = ManualDefect.objects.all()
-    if start_date and end_date:
-        manual_defects = manual_defects.filter(
-            entry_date__date__gte=start_date,
-            entry_date__date__lte=end_date,
-        )
+    manual_units = (
+        ControlUnit.objects.filter(defect=True)
+        .select_related("lot")
+        .prefetch_related("production_records")
+    )
+    if defect_filter == "in_progress":
+        manual_units = manual_units.filter(production_records__isnull=True)
     if lot_number:
-        manual_defects = manual_defects.filter(lot_number__icontains=lot_number)
-    manual_defects = manual_defects.order_by("-created_at")
+        manual_units = manual_units.filter(lot__number__icontains=lot_number)
+    manual_units = list(manual_units.order_by("-updated_at"))
     if limit:
-        manual_defects = manual_defects[:limit]
+        manual_units = manual_units[: limit * 2]
     manual_data = []
     seen_manual_keys = set()
-    for md in manual_defects:
-        manual_key = (md.pcs_no, md.lot_number or "")
+    for unit in manual_units:
+        manual_key = (unit.sn, unit.lot.number if unit.lot else "")
         if manual_key in seen_manual_keys:
             continue
-        if md.pcs_no in sql_pcs:
+        if unit.sn in sql_pcs:
             continue
+        entry_date = unit.resolved_entry_date
+        if start_date and end_date:
+            if not entry_date or entry_date.date() < start_date or entry_date.date() > end_date:
+                continue
         seen_manual_keys.add(manual_key)
         manual_data.append({
-            "pcs_no": md.pcs_no,
-            "production_spec": md.production_spec or "",
-            "lot_number": md.lot_number or "",
-            "entry_date": md.entry_date,
+            "pcs_no": unit.sn,
+            "production_spec": unit.production_spec,
+            "lot_number": unit.lot.number if unit.lot else "",
+            "entry_date": entry_date,
             "last_ok_station": None,
             "last_ok_at": None,
             "is_manual": True,
         })
+        if limit and len(manual_data) >= limit:
+            break
 
     pcs_numbers = [row["pcs_no"] for row in rows] + [
         row["pcs_no"] for row in manual_data
@@ -596,18 +603,22 @@ def report4_defects(start_date=None, end_date=None, defect_filter='defect', limi
     comments = {}
     if pcs_numbers:
         comments = {
-            item["pcs_no"]: item["comment"]
-            for item in SNComment.objects.filter(pcs_no__in=pcs_numbers).values(
-                "pcs_no", "comment"
+            item["sn"]: item["comment"]
+            for item in ControlUnit.objects.filter(sn__in=pcs_numbers).values(
+                "sn", "comment"
             )
         }
     last_ok_by_pcs = _report4_last_ok_rows(pcs_numbers)
 
     photos_map = {}
     if pcs_numbers:
-        photos = SNPhoto.objects.filter(pcs_no__in=pcs_numbers).order_by("pcs_no", "uploaded_at")
+        photos = (
+            UnitPhoto.objects.filter(unit__sn__in=pcs_numbers)
+            .select_related("unit")
+            .order_by("unit__sn", "uploaded_at")
+        )
         for photo in photos:
-            photos_map.setdefault(photo.pcs_no, []).append({
+            photos_map.setdefault(photo.unit.sn, []).append({
                 "url": photo.image.url,
                 "filename": photo.image.name.split('/')[-1] if photo.image.name else "",
                 "caption": photo.caption or "",
@@ -657,7 +668,7 @@ def report5_repeated_passes(start_date=None, end_date=None, limit=None, lot_numb
     defect (брак по данным отчёта «Брак»: defect=True у ProductionRecord
     или запись ManualDefect).
     """
-    from production.models import ManualDefect, ProductionRecord, SNComment
+    from production.models import ControlUnit
 
     date_conditions = []
     date_params = []
@@ -717,20 +728,15 @@ def report5_repeated_passes(start_date=None, end_date=None, limit=None, lot_numb
     defect_pcs = set()
     if pcs_numbers:
         comments_map = {
-            item["pcs_no"]: item["comment"]
-            for item in SNComment.objects.filter(
-                pcs_no__in=pcs_numbers
-            ).values("pcs_no", "comment")
+            item["sn"]: item["comment"]
+            for item in ControlUnit.objects.filter(
+                sn__in=pcs_numbers
+            ).values("sn", "comment")
         }
         defect_pcs = set(
-            ProductionRecord.objects.filter(
-                pcs_no__in=pcs_numbers, defect=True
-            ).values_list("pcs_no", flat=True)
-        )
-        defect_pcs |= set(
-            ManualDefect.objects.filter(
-                pcs_no__in=pcs_numbers
-            ).values_list("pcs_no", flat=True)
+            ControlUnit.objects.filter(
+                sn__in=pcs_numbers, defect=True
+            ).values_list("sn", flat=True)
         )
 
     for row in rows:
@@ -789,35 +795,33 @@ def report6_serial_number(pcs_no):
     if not pcs_no:
         return []
 
-    from production.models import ProductionRecord, SNComment
+    from production.models import ControlUnit, Production
+
+    unit = ControlUnit.objects.filter(sn=pcs_no).select_related("lot").first()
+    if not unit:
+        return []
 
     records = list(
-        ProductionRecord.objects.filter(pcs_no=pcs_no).order_by("created_date", "id")
+        Production.objects.filter(unit=unit)
+        .select_related("station")
+        .order_by("created_date", "id")
     )
-    comments = {}
-    if records:
-        comments = {
-            item["pcs_no"]: item["comment"]
-            for item in SNComment.objects.filter(
-                pcs_no__in=[record.pcs_no for record in records]
-            ).values("pcs_no", "comment")
-        }
     return [
         {
-            "pcs_no": record.pcs_no,
-            "lot_number": record.lot_number,
-            "production_spec": record.production_spec or "",
-            "subop_no": record.subop_no,
-            "workstation_name": translate_workstation_name(
-                record.position_no, record.workstation_name
-            ),
+            "pcs_no": unit.sn,
+            "lot_number": unit.lot.number if unit.lot else "",
+            "production_spec": unit.production_spec,
+            "subop_no": record.station.number,
+            "workstation_name": record.station.name_en
+            or record.station.name_ru
+            or record.station.name_zh,
             "created_date": record.created_date,
             "result": record.result or "",
-            "test_data": record.test_data or "",
-            "comment": comments.get(record.pcs_no, ""),
+            "test_data": record.test_data_ru or record.test_data or "",
+            "comment": unit.comment,
         }
-         for record in records
-     ]
+        for record in records
+    ]
 
 
 def report6_summary(pcs_no):
@@ -828,85 +832,24 @@ def report6_summary(pcs_no):
       pcs_no, lot_number, production_spec, assembly_start,
       assembly_end, completed, last_station, last_station_date,
       last_station_status, comment, double_passes, defect, photos.
-
-    defect — True, если любая запись ProductionRecord для данного pcs_no имеет
-    установленный брак (defect=True). Устанавливается администратором.
-
-    photos — список фотографий SNPhoto для данного pcs_no (для просмотра в сводке).
-
-    double_passes — станции, пройденные более 2 раз (формат: "20 - 3, 70 - 2").
-
-    completed = True, если SN прошёл станцию 130 (STATION_BOL_END) с OK.
-    completed = False — сборка не завершена: в last_station / last_station_date
-    возвращается последняя пройденная станция и её дата/время,
-    last_station_status — статус этой станции (OK или NG).
     """
     if not pcs_no:
         return None
 
-    from production.models import ProductionRecord, SNComment, SNPhoto, ManualDefect
+    from production.models import ControlUnit, UnitPhoto
+
+    unit = ControlUnit.objects.filter(sn=pcs_no).select_related("lot").first()
+    if not unit:
+        return None
 
     records = list(
-        ProductionRecord.objects.filter(pcs_no=pcs_no).order_by("created_date", "id")
+        unit.production_records.select_related("station").order_by(
+            "created_date", "id"
+        )
     )
-    if not records:
-        md = ManualDefect.objects.filter(pcs_no=pcs_no).first()
-        if not md:
-            return None
-        sn_comment = SNComment.objects.filter(pcs_no=pcs_no).first()
-        comment = sn_comment.comment if sn_comment else ""
-        photos = []
-        for photo in SNPhoto.objects.filter(pcs_no=pcs_no).order_by("uploaded_at"):
-            photos.append({
-                "url": photo.image.url,
-                "filename": photo.image.name.split('/')[-1] if photo.image.name else "",
-                "caption": photo.caption or "",
-                "id": photo.id,
-            })
-        return {
-            "pcs_no": pcs_no,
-            "lot_number": md.lot_number or "",
-            "production_spec": md.production_spec or "",
-            "assembly_start": md.entry_date,
-            "assembly_end": None,
-            "completed": False,
-            "last_station": "",
-            "last_station_date": None,
-            "last_station_status": "",
-            "comment": comment,
-            "double_passes": "",
-            "defect": False,
-            "photos": photos,
-        }
-
-    first = records[0]
-
-    start_record = next(
-        (r for r in records if r.subop_no == STATION_FOL_START),
-        None,
-    )
-    assembly_start = start_record.created_date if start_record else first.created_date
-
-    end_record = None
-    for r in reversed(records):
-        if r.subop_no == STATION_BOL_END and (r.result or "").upper() == "OK":
-            end_record = r
-            break
-
-    comment = ""
-    sn_comment = SNComment.objects.filter(pcs_no=pcs_no).first()
-    if sn_comment:
-        comment = sn_comment.comment
-
-    subop_counts = Counter(r.subop_no for r in records)
-    double_passes = ", ".join(
-        f"{sn} - {count}" for sn, count in sorted(subop_counts.items()) if count > 2
-    )
-
-    defect = any(r.defect for r in records)
 
     photos = []
-    for photo in SNPhoto.objects.filter(pcs_no=pcs_no).order_by("uploaded_at"):
+    for photo in UnitPhoto.objects.filter(unit=unit).order_by("uploaded_at"):
         photos.append({
             "url": photo.image.url,
             "filename": photo.image.name.split('/')[-1] if photo.image.name else "",
@@ -914,41 +857,83 @@ def report6_summary(pcs_no):
             "id": photo.id,
         })
 
+    lot_number = unit.lot.number if unit.lot else ""
+    production_spec = unit.production_spec
+
+    if not records:
+        return {
+            "pcs_no": unit.sn,
+            "lot_number": lot_number,
+            "production_spec": production_spec,
+            "assembly_start": unit.resolved_entry_date,
+            "assembly_end": None,
+            "completed": False,
+            "last_station": "",
+            "last_station_date": None,
+            "last_station_status": "",
+            "comment": unit.comment,
+            "double_passes": "",
+            "defect": unit.defect,
+            "photos": photos,
+        }
+
+    first = records[0]
+
+    start_record = next(
+        (r for r in records if r.station.number == STATION_FOL_START),
+        None,
+    )
+    assembly_start = start_record.created_date if start_record else first.created_date
+
+    end_record = None
+    for record in reversed(records):
+        if record.station.number == STATION_BOL_END and (record.result or "").upper() == "OK":
+            end_record = record
+            break
+
+    subop_counts = Counter(record.station.number for record in records)
+    double_passes = ", ".join(
+        f"{sn} - {count}" for sn, count in sorted(subop_counts.items()) if count > 2
+    )
+
     if end_record:
         return {
-            "pcs_no": pcs_no,
-            "lot_number": end_record.lot_number,
-            "production_spec": end_record.production_spec or "",
+            "pcs_no": unit.sn,
+            "lot_number": lot_number,
+            "production_spec": production_spec,
             "assembly_start": assembly_start,
             "assembly_end": end_record.created_date,
             "completed": True,
             "last_station": "",
             "last_station_date": None,
-            "comment": comment,
+            "comment": unit.comment,
             "double_passes": double_passes,
-            "defect": defect,
+            "defect": unit.defect,
             "photos": photos,
         }
 
     last_record = records[-1]
 
-    station_name = REPORT4_STATION_NAMES.get(last_record.subop_no)
-    if not station_name:
-        station_name = translate_workstation_name(last_record.position_no, last_record.workstation_name)
+    station_name = (
+        last_record.station.name_en
+        or last_record.station.name_ru
+        or last_record.station.name_zh
+        or REPORT4_STATION_NAMES.get(last_record.station.number, "")
+    )
 
     return {
-        "pcs_no": pcs_no,
-        "lot_number": first.lot_number,
-        "production_spec": first.production_spec or "",
+        "pcs_no": unit.sn,
+        "lot_number": lot_number,
+        "production_spec": production_spec,
         "assembly_start": assembly_start,
         "assembly_end": None,
         "completed": False,
-        "last_station": station_name or "",
+        "last_station": station_name,
         "last_station_date": last_record.created_date,
         "last_station_status": (last_record.result or "").upper(),
-        "comment": comment,
+        "comment": unit.comment,
         "double_passes": double_passes,
-        "defect": defect,
+        "defect": unit.defect,
         "photos": photos,
     }
 
