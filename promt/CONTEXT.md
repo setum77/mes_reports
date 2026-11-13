@@ -82,8 +82,8 @@ src/
   uploads/                  приём Excel, парсер, импорт с дедупликацией
   reports/
     urls.py                 маршруты отчётов и экспорта
-    views.py                страницы, фильтры, экспорт в Excel (~1960 строк)
-    queries.py              SQL и агрегации (~1185 строк)
+    views.py                страницы, фильтры, экспорт в Excel (~1990 строк)
+    queries.py              SQL и агрегации (~1200 строк)
     templatetags/           report_tags.py
   backup/                   бэкап/восстановление/очистка (в админке)
   templates/                base, home, reports/reportN.html, admin/backup/*, uploads/*
@@ -155,6 +155,7 @@ FaultJournal 1 ── * FaultAttachment
 - `Production` — число уникальных БУ, прошедших станцию `10` с `result=OK`;
 - `Ok` — число уникальных БУ, прошедших станцию `130` с `result=OK`;
 - `Diff = Production − Ok`;
+- `Defect` — число `ControlUnit` с `defect=True` в лоте (как в отчёте №4);
 - `start` — минимальный `created_date` станции `10` в лоте;
 - `finish` — максимальный `created_date` станции `130` **любого результата**
   (в старом коде ошибочно фильтровался `result='OK'`).
@@ -234,7 +235,7 @@ FaultJournal 1 ── * FaultAttachment
 
 | № | Страница | Фильтры | Содержание |
 |---|---|---|---|
-| 1 | Сводный по лотам | год (по умолчанию текущий), произвольный период | Лоты: Production (уник. OK на 010), Ok (уник. OK на 130), Diff, брак (SN, если <10), start/finish (без фильтра result), Total/комментарий из `Lot`; сортировка по `start` (старые сверху); сводка сверху |
+| 1 | Сводный по лотам | год (по умолчанию текущий), произвольный период | Лоты: Production (уник. OK на 010), Ok (уник. OK на 130), Difference, SN hasn’t finished production (Diff-SN, ссылки на отчёт 6, >10 — надпись), Defect (кол-во `ControlUnit.defect=true` по лоту), SN Defect (ссылки на отчёт 6, >10 — надпись), Start/Finish (без фильтра result), Total/Comment из `Lot`; сортировка по Start (старые сверху); сводка сверху, включая «Брак» |
 | 2 | Производительность линии | месяц, год, период, лот | По дням: FOL (010→050) и BOL (060→130) — часы, выпуск, скорость; только дни с непустыми данными; 3 диаграммы; сводка FOL/BOL; `Cache-Control: no-store` |
 | 3 | Сводный по месяцам | год | Агрегация данных отчёта 2 по 12 месяцам года (все месяцы, включая пустые); те же блоки FOL/BOL, диаграммы; `Cache-Control: no-store` у HTML и Excel-экспорта |
 | 4 | Брак | 30d/месяц/90d/180d/год/период/лот, тип брака | Ручной брак + БУ, не завершившие производство; последняя OK-станция и дата; сводка по этапам; комментарий SN (редактирование — staff); фото: просмотр — всем, кнопка «+» (загрузка) и корзина (удаление) — только staff, у всех строк таблицы |
@@ -246,6 +247,7 @@ FaultJournal 1 ── * FaultAttachment
 Общие механики: `_reportN_period` в `views.py` разбирает и валидирует GET-параметры
 (некорректные значения → сообщение и безопасный дефолт); `apply_sort` сортирует список
 словарей по белому списку `SORTABLE_FIELDS`; сводка считается по отфильтрованным данным.
+Имя Excel-файла экспорта содержит дату и время сохранения (`_YYYY-MM-DD_HH-MM-SS`).
 
 ---
 
@@ -361,7 +363,7 @@ uv run --extra dev python -m pytest tests/test_reports.py -q
 uv run --extra dev python -m pytest -q
 ```
 
-В `tests/` 135 тестов (включая 4 доменных теста в `test_domain.py` и 11 тестов
+В `tests/` 137 тестов (включая 4 доменных теста в `test_domain.py` и 11 тестов
 бэкапа в `test_backup.py`). БД-тесты требуют запущенного PostgreSQL
 (`start`/`stop` в корне переводят службу `postgresql-x64-17`).
 
@@ -373,7 +375,7 @@ uv run --extra dev python -m pytest -q
 |---|---|
 | Новый/изменённый отчёт | `reports/queries.py` (данные), `reports/views.py` (фильтры, экспорт), `templates/reports/reportN.html`, `reports/urls.py`, `templates/base.html`/`home.html` (ссылки) |
 | Фильтр периода | `_reportN_period`/`_reportN_data` в `views.py`; частая причина 500 — необработанный разбор дат |
-| Экспорт Excel | `ReportNExportView` в `views.py`; для №2/№3 — листы сводки и диаграмм |
+| Экспорт Excel | `ReportNExportView` в `views.py`; для №2/№3 — листы сводки и диаграмм; для №1 — лист «Сводка»; имя файла с датой/временем |
 | Импорт/колонки | `uploads/excel_parser.py`, `uploads/forms.py`, `uploads/views.py` |
 | Модели/админка/миграции | `production/models.py`, `production/admin.py`, `production/stations.py`, `production/testdata.py`, `production/migrations/`, `mes_report3/admin_site.py` |
 | Бэкап | `backup/utils.py`, `backup/admin.py`, `templates/admin/backup/*`, `tests/test_backup.py` |

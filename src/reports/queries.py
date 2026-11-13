@@ -180,19 +180,46 @@ def report1_orders(start_date=None, end_date=None):
         cursor.execute(sql, final_params)
         rows = dictfetchall(cursor)
 
-    from production.models import Lot
+    from production.models import ControlUnit, Lot
 
     lot_infos = Lot.objects.in_bulk(
         [row["lot_number"] for row in rows], field_name="number"
     )
+
+    # SN в браке (ControlUnit.defect=True) по лотам — как в отчёте №4.
+    defect_map = {}
+    if rows:
+        defect_units = ControlUnit.objects.filter(
+            lot__number__in=[row["lot_number"] for row in rows], defect=True
+        ).values_list("lot__number", "sn")
+        for lot_number, sn in defect_units:
+            defect_map.setdefault(lot_number or "", []).append(sn)
 
     results = []
     for i, row in enumerate(rows, 1):
         production = row["production"]
         ok = row["ok_count"]
         diff = production - ok
-        defect_count = row["defect_count"]
-        defect_display = row["defect_sns"] if defect_count < 10 else "SN не прошедших сборку более 10 штук"
+
+        not_finished_count = row["defect_count"]
+        not_finished_sns = (
+            row["defect_sns"].split(", ")
+            if row["defect_sns"] and not_finished_count < 10
+            else []
+        )
+        not_finished_display = (
+            (row["defect_sns"] or "")
+            if not_finished_count < 10
+            else "SN не прошедших сборку более 10 штук"
+        )
+
+        defect_sns = sorted(defect_map.get(row["lot_number"], []))
+        defect_count = len(defect_sns)
+        defect_display = (
+            ", ".join(defect_sns)
+            if defect_count < 10
+            else "SN в браке более 10 штук"
+        )
 
         lot_info = lot_infos.get(row["lot_number"])
 
@@ -204,8 +231,12 @@ def report1_orders(start_date=None, end_date=None):
             "Production": production,
             "Ok": ok,
             "Diff": diff,
-            "Defect": defect_display,
-            "defect_sns": row["defect_sns"].split(", ") if row["defect_sns"] and defect_count < 10 else [],
+            "not_finished_count": not_finished_count,
+            "not_finished_sns": not_finished_sns,
+            "not_finished_display": not_finished_display,
+            "defect_count": defect_count,
+            "defect_sns": defect_sns if defect_count < 10 else [],
+            "defect_display": defect_display,
             "start": row["start_dt"],
             "finish": row["finish_dt"],
             "comment": lot_info.comment if lot_info else "",

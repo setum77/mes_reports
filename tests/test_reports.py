@@ -86,8 +86,35 @@ def test_report1_orders():
     assert row["Production"] == 2
     assert row["Ok"] == 1
     assert row["Diff"] == 1
-    assert len(row["defect_sns"]) == 1
-    assert row["defect_sns"][0] == "PCS2"
+    assert row["not_finished_count"] == 1
+    assert row["not_finished_sns"] == ["PCS2"]
+    assert row["defect_count"] == 0
+    assert row["defect_sns"] == []
+
+
+@pytest.mark.django_db
+def test_report1_orders_defect_count_and_sns():
+    """Defect = ControlUnit.defect=True по лоту, SN Defect — список SN."""
+    dt = timezone.make_aware(datetime(2026, 8, 13, 10, 0))
+    ProductionRecord.objects.create(
+        lot_number="LOT-DEF", subop_no=10, pcs_no="PCS-OK",
+        created_date=dt, result="OK", production_spec="SPEC",
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT-DEF", subop_no=10, pcs_no="PCS-BAD",
+        created_date=dt, result="OK", production_spec="SPEC", defect=True,
+    )
+    ProductionRecord.objects.create(
+        lot_number="LOT-DEF", subop_no=130, pcs_no="PCS-BAD",
+        created_date=dt, result="OK", production_spec="SPEC", defect=True,
+    )
+
+    data = report1_orders()
+    row = next(item for item in data if item["LOT"] == "LOT-DEF")
+    assert row["defect_count"] == 1
+    assert row["defect_sns"] == ["PCS-BAD"]
+    # PCS-BAD завершил производство и не попадает в not_finished.
+    assert row["not_finished_sns"] == ["PCS-OK"]
 
 
 @pytest.mark.django_db
@@ -99,7 +126,7 @@ def test_report1_no_data():
 
 @pytest.mark.django_db
 def test_report1_orders_lot_info_loaded_in_one_query(django_assert_num_queries):
-    """Отчёт №1 не делает отдельный запрос LotInfo на каждый лот (N+1)."""
+    """Отчёт №1 не делает запрос на каждый лот (N+1): SQL + Lot + Defect."""
     dt = timezone.make_aware(datetime(2026, 4, 1, 9, 0))
     ProductionRecord.objects.bulk_create([
         ProductionRecord(
@@ -109,7 +136,7 @@ def test_report1_orders_lot_info_loaded_in_one_query(django_assert_num_queries):
         for index in range(5)
     ])
 
-    with django_assert_num_queries(2):
+    with django_assert_num_queries(3):
         data = report1_orders(date(2026, 4, 1), date(2026, 4, 30))
 
     assert len(data) == 5
@@ -1739,6 +1766,7 @@ def test_report1_summary():
         "production_total": 5,
         "ok_total": 1,
         "diff_total": 4,
+        "defect_total": 0,
     }
 
 
@@ -1771,6 +1799,7 @@ def test_report1_view_period_summary_context(monkeypatch):
         "production_total": 5,
         "ok_total": 1,
         "diff_total": 4,
+        "defect_total": 0,
     }
     content = response.content.decode()
     assert "Всего дней" in content
@@ -1957,7 +1986,21 @@ def test_report1_export_is_available_to_regular_user():
         assert response.status_code == 200
         assert response["Content-Type"].startswith("application/vnd.openxmlformats")
         workbook = load_workbook(BytesIO(response.content), read_only=True)
-        assert workbook.sheetnames == ["Сводный отчет"]
+        assert workbook.sheetnames == ["Сводный отчет", "Сводка"]
+
+
+@pytest.mark.django_db
+def test_report1_export_has_summary_sheet_with_defect():
+    """Экспорт №1 содержит лист «Сводка» со строкой «Брак»."""
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        response = Client().get("/reports/1/export/", {"filter": "year", "year": "2026"})
+
+    assert response.status_code == 200
+    workbook = load_workbook(BytesIO(response.content), read_only=True)
+    assert {"Сводный отчет", "Сводка"} <= set(workbook.sheetnames)
+    summary = workbook["Сводка"]
+    labels = [summary.cell(row, 1).value for row in range(1, summary.max_row + 1)]
+    assert "Брак" in labels
 
 
 @pytest.mark.django_db
@@ -1991,12 +2034,18 @@ def test_report1_export_order_matches_page(monkeypatch):
     rows = [
         {
             "N": 1, "LOT": "LOT-NEW", "production_spec": "S", "Total": 1,
-            "Production": 1, "Ok": 0, "Diff": 1, "Defect": "", "defect_sns": [],
+            "Production": 1, "Ok": 0, "Diff": 1,
+            "not_finished_count": 1, "not_finished_sns": ["SN-NEW"],
+            "not_finished_display": "SN-NEW",
+            "defect_count": 0, "defect_sns": [], "defect_display": "",
             "start": datetime(2026, 5, 2, 9, 0), "finish": None, "comment": "",
         },
         {
             "N": 2, "LOT": "LOT-OLD", "production_spec": "S", "Total": 1,
-            "Production": 1, "Ok": 0, "Diff": 1, "Defect": "", "defect_sns": [],
+            "Production": 1, "Ok": 0, "Diff": 1,
+            "not_finished_count": 1, "not_finished_sns": ["SN-OLD"],
+            "not_finished_display": "SN-OLD",
+            "defect_count": 0, "defect_sns": [], "defect_display": "",
             "start": datetime(2026, 5, 1, 9, 0), "finish": None, "comment": "",
         },
     ]

@@ -55,12 +55,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "uv Запуск локального сервера.md",
+                "file": "promt_mes_reports/01. Сводный отчет (заказы).md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "uv Запуск локального сервера"
+              "title": "01. Сводный отчет (заказы)"
             }
           }
         ],
@@ -233,6 +233,8 @@
   },
   "active": "df76b29e72428baf",
   "lastOpenFiles": [
+    "promt_mes_reports/08. Отчет по станциям.md",
+    "promt_mes_reports/01. Сводный отчет (заказы).md",
     "uv Запуск локального сервера.md",
     "promt_mes_reports/Backup.md",
     "plans/05-backup-rework.md",

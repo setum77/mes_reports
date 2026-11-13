@@ -50,7 +50,7 @@ from reports.queries import (
 
 SORTABLE_FIELDS = {
     "report1": ["LOT", "production_spec", "Total", "Production", "Ok",
-                 "Diff", "Defect", "start", "finish", "comment"],
+                 "Diff", "not_finished_count", "defect_count", "start", "finish", "comment"],
     "report2": ["report_date", "fol_hours", "fol_production", "fol_speed",
                  "bol_hours", "bol_production", "bol_speed"],
     "report3": ["report_month", "fol_hours", "fol_production", "fol_speed",
@@ -346,6 +346,7 @@ def _report1_summary(data, start_date, end_date):
         "production_total": sum(row.get("Production", 0) or 0 for row in data),
         "ok_total": sum(row.get("Ok", 0) or 0 for row in data),
         "diff_total": sum(row.get("Diff", 0) or 0 for row in data),
+        "defect_total": sum(row.get("defect_count", 0) or 0 for row in data),
     }
 
 
@@ -410,6 +411,25 @@ def _report1_data(request):
     }
 
 
+REPORT1_DESCRIPTION = """\
+Отчёт «Сводный отчёт (заказы)» показывает по лотам количество запущенных и выпущенных блоков управления (БУ),
+а также разницу и брак.
+
+Для каждого лота отображаются:
+  • Production — уникальные SN, прошедшие станцию 010 (подача PCB) с результатом OK;
+  • Ok — уникальные SN, прошедшие станцию 130 (этикетка) с результатом OK;
+  • Difference = Production − Ok — не прошедшие сборку;
+  • SN hasn’t finished production — список SN из Difference (ссылка на отчёт по SN), либо надпись при количестве более 10;
+  • Defect — количество SN в браке (ControlUnit.defect = true) из текущего лота;
+  • SN Defect — список таких SN (ссылка на отчёт по SN), либо надпись при количестве более 10;
+  • Start / Finish — дата первой и последней записи лота;
+  • Comment — комментарий лота (редактирование — только staff).
+
+Сводка: всего дней, выпущено лотов, запущено в производство, выпущено, не прошло сборку, брак.
+Фильтры: Год (по умолчанию текущий), Произвольный период. Экспорт в Excel доступен без авторизации.
+"""
+
+
 class Report1View(TemplateView):
     template_name = "reports/report1.html"
 
@@ -423,6 +443,7 @@ class Report1View(TemplateView):
             data=data,
             summary=_report1_summary(data, context["start_date"], context["end_date"]),
             years=range(2024, dj_timezone.localdate().year + 2),
+            report1_description_lines=REPORT1_DESCRIPTION.strip().split("\n"),
             **context,
         ))
 
@@ -1107,6 +1128,13 @@ class _ExcelExportBase(View):
         buf = BytesIO()
         wb.save(buf)
         buf.seek(0)
+        # В имя файла добавляем дату и время сохранения (в часовом поясе проекта).
+        timestamp = dj_timezone.localtime(dj_timezone.now()).strftime("%Y-%m-%d_%H-%M-%S")
+        if "." in filename:
+            stem, ext = filename.rsplit(".", 1)
+            filename = f"{stem}_{timestamp}.{ext}"
+        else:
+            filename = f"{filename}_{timestamp}"
         response = HttpResponse(
             buf.getvalue(),
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1117,26 +1145,52 @@ class _ExcelExportBase(View):
 
 class Report1ExportView(_ExcelExportBase):
     def get(self, request):
-        data, _context = _report1_data(request)
+        data, context = _report1_data(request)
+        summary = _report1_summary(data, context["start_date"], context["end_date"])
 
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Сводный отчет"
-        headers = ["N", "LOT", "Production spec.", "Total", "Production", "Ok", "Diff", "Defect", "start", "finish", "comment"]
+        headers = [
+            "N", "LOT", "Production spec.", "Total", "Production", "Ok",
+            "Difference", "SN hasn’t finished production", "Defect",
+            "SN Defect", "Start", "Finish", "Comment",
+        ]
         for col, h in enumerate(headers, 1):
             ws.cell(1, col, h)
         for row_num, d in enumerate(data, 2):
-            ws.cell(row_num, 1, d["N"])
-            ws.cell(row_num, 2, d["LOT"])
-            ws.cell(row_num, 3, d["production_spec"])
-            ws.cell(row_num, 4, d["Total"])
-            ws.cell(row_num, 5, d["Production"])
-            ws.cell(row_num, 6, d["Ok"])
-            ws.cell(row_num, 7, d["Diff"])
-            ws.cell(row_num, 8, d["Defect"])
-            ws.cell(row_num, 9, self._excel_value(d["start"]))
-            ws.cell(row_num, 10, self._excel_value(d["finish"]))
-            ws.cell(row_num, 11, d["comment"])
+            ws.cell(row_num, 1, d.get("N"))
+            ws.cell(row_num, 2, d.get("LOT"))
+            ws.cell(row_num, 3, d.get("production_spec"))
+            ws.cell(row_num, 4, d.get("Total"))
+            ws.cell(row_num, 5, d.get("Production"))
+            ws.cell(row_num, 6, d.get("Ok"))
+            ws.cell(row_num, 7, d.get("Diff"))
+            ws.cell(row_num, 8, d.get("not_finished_display", ""))
+            ws.cell(row_num, 9, d.get("defect_count", 0))
+            ws.cell(row_num, 10, d.get("defect_display", ""))
+            ws.cell(row_num, 11, self._excel_value(d.get("start")))
+            ws.cell(row_num, 12, self._excel_value(d.get("finish")))
+            ws.cell(row_num, 13, d.get("comment"))
+
+        # Лист со сводной информацией.
+        summary_ws = wb.create_sheet("Сводка")
+        summary_ws["A1"] = "Сводная информация"
+        summary_ws["A1"].font = Font(bold=True, size=14)
+        summary_rows = [
+            ["Период", f'{context["start_date"]:%d.%m.%Y} — {context["end_date"]:%d.%m.%Y}'],
+            ["Всего дней", summary["total_days"]],
+            ["Выпущено лотов", summary["released_lots"]],
+            ["Запущено в производство", summary["production_total"]],
+            ["Выпущено", summary["ok_total"]],
+            ["Не прошло сборку", summary["diff_total"]],
+            ["Брак", summary["defect_total"]],
+        ]
+        for row_num, row in enumerate(summary_rows, 3):
+            summary_ws.cell(row_num, 1, row[0]).font = Font(bold=True)
+            summary_ws.cell(row_num, 2, row[1])
+        summary_ws.column_dimensions["A"].width = 28
+        summary_ws.column_dimensions["B"].width = 22
 
         return self._make_response(wb, "report1_orders.xlsx")
 
