@@ -3,14 +3,65 @@
 {% block content %}
 <div id="content-main">
   <div class="module">
-    <h1>{{ title }}</h1>
-    <form method="post">{% csrf_token %}
+    <form id="create-backup-form" method="post">{% csrf_token %}
       <div class="form-row">
         <p>Создать полный бэкап: база данных (production app) + медиафайлы.</p>
-        <button type="submit" class="button button-accent">Создать бэкап</button>
+        <button type="submit" id="create-backup-submit" class="button button-accent">Создать бэкап</button>
         <a href="{% url 'mes_admin:backup_index' %}" class="button">Отмена</a>
       </div>
     </form>
+
+    {% include "admin/backup/_progress.html" %}
   </div>
 </div>
+
+<script>
+(function() {
+    var form = document.getElementById("create-backup-form");
+    var submitBtn = document.getElementById("create-backup-submit");
+    var csrfToken = form.querySelector("[name=csrfmiddlewaretoken]").value;
+
+    form.addEventListener("submit", function(event) {
+        event.preventDefault();
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = "Создаётся...";
+
+        fetch("{% url 'mes_admin:backup_create_bg' %}", {
+            method: "POST",
+            headers: {
+                "X-Requested-With": "XMLHttpRequest",
+                "X-CSRFToken": csrfToken
+            },
+            credentials: "same-origin"
+        })
+            .then(function(response) {
+                if (!response.ok) {
+                    throw new Error("HTTP " + response.status);
+                }
+                return response.json();
+            })
+            .then(function(data) {
+                if (data.error || !data.task_id) {
+                    throw new Error(data.error || "Не удалось запустить создание бэкапа");
+                }
+                MesBackupProgress.start(data.task_id, {
+                    minPercent: 0,
+                    maxPercent: 100,
+                    totalSteps: 4,
+                    onError: function() {
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = "Создать бэкап";
+                    }
+                });
+            })
+            .catch(function(error) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = "Создать бэкап";
+                MesBackupProgress.show();
+                MesBackupProgress.fail(error.message || "Не удалось запустить создание бэкапа");
+            });
+    });
+})();
+</script>
 {% endblock %}

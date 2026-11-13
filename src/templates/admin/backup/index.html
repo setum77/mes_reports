@@ -1,27 +1,24 @@
 {% extends "admin/base_site.html" %}
-{% load i18n widget_tweaks %}
+
+{% block extrastyle %}{{ block.super }}
+<style>
+  .mes-dashboard__links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .button-accent { background: var(--primary, #79aec8); border-color: var(--primary, #79aec8); color: #fff; }
+</style>
+{% endblock %}
 
 {% block content %}
 <div id="content-main">
   <div class="module">
-    <h1>{{ title }}</h1>
     <p>Управление резервными копиями базы данных и медиафайлов.</p>
 
     <div class="mes-dashboard__links">
       <a class="button button-accent" href="{% url 'mes_admin:backup_create' %}">Создать бэкап</a>
-      <a class="button" href="{% url 'mes_admin:backup_list' %}">Список бэкапов</a>
-      <a class="button" href="{% url 'mes_admin:backup_restore' %}">Восстановить из бэкапа</a>
       <a class="button" href="{% url 'mes_admin:backup_restore_upload' %}">Восстановить из архива</a>
       <a class="button" href="{% url 'mes_admin:backup_wipe' %}">Очистить все данные</a>
     </div>
 
-    {% if messages %}
-      {% for message in messages %}
-        <div class="messagelist">
-          <p class="{{ message.tags }}">{{ message }}</p>
-        </div>
-      {% endfor %}
-    {% endif %}
+    {% include "admin/backup/_backup_table.html" %}
   </div>
 </div>
 {% endblock %}

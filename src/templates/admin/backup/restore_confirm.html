@@ -3,8 +3,6 @@
 {% block content %}
 <div id="content-main">
   <div class="module">
-    <h1>{{ title }}</h1>
-
     <div class="form-row">
       <p><strong>Бэкап:</strong> {{ backup.name }}</p>
       <p><strong>Время создания:</strong> {{ backup.timestamp }}</p>
@@ -31,7 +29,7 @@
 
     <form method="post">{% csrf_token %}
       <button type="submit" class="button button-accent">Восстановить данные</button>
-      <a href="{% url 'mes_admin:backup_restore' %}" class="button">Отмена</a>
+      <a href="{% url 'mes_admin:backup_index' %}" class="button">Отмена</a>
     </form>
   </div>
 </div>

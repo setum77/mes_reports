@@ -2,14 +2,13 @@ import hashlib
 import io
 import json
 import logging
-import os
+import re
 import shutil
 import tarfile
 import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 
 from django.apps import apps
 from django.conf import settings
@@ -87,15 +86,23 @@ def _get_timestamp():
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
-def _set_progress(task_id, step, message):
+def _set_progress(task_id, step, message, total_steps=None, percent=None, status="running"):
     """Store progress on disk so it is visible across Gunicorn workers."""
     if not task_id:
         return
     with _progress_lock:
-        data = {"step": step, "message": message}
+        data = {
+            "step": step,
+            "message": message,
+            "status": status,
+        }
+        if total_steps is not None:
+            data["total_steps"] = total_steps
+        if percent is not None:
+            data["percent"] = percent
         path = _progress_file_path(task_id)
         tmp_path = path.with_suffix(".tmp")
-        tmp_path.write_text(json.dumps(data))
+        tmp_path.write_text(json.dumps(data), encoding="utf-8")
         tmp_path.replace(path)
 
 
@@ -124,6 +131,77 @@ def clear_progress(task_id):
                 path.unlink()
             except OSError:
                 pass
+
+
+def consume_progress(task_id):
+    """Read a task's progress and remove its file (used once by the index page)."""
+    data = get_progress(task_id)
+    if data is not None:
+        clear_progress(task_id)
+    return data
+
+
+class _DumpProgressWriter:
+    """File-like wrapper that counts serialized objects during dumpdata."""
+
+    def __init__(self, target, task_id, total_records):
+        self.target = target
+        self.task_id = task_id
+        self.total_records = total_records
+        self.count = 0
+        self.last_percent = -1
+
+    def write(self, data):
+        self.target.write(data)
+        if self.total_records:
+            self.count += data.count('"model":')
+            percent = min(55, 5 + int(self.count / self.total_records * 50))
+            if percent != self.last_percent:
+                self.last_percent = percent
+                _set_progress(
+                    self.task_id,
+                    1,
+                    "Создание дампа БД... {}/{}".format(self.count, self.total_records),
+                    total_steps=4,
+                    percent=percent,
+                )
+        return len(data)
+
+    def flush(self):
+        self.target.flush()
+
+
+class _LoadProgressWriter(io.StringIO):
+    """StringIO that parses loaddata progress lines and updates progress."""
+
+    def __init__(self, task_id, total_records, base_percent, span_percent, step, total_steps):
+        super().__init__()
+        self.task_id = task_id
+        self.total_records = total_records
+        self.base_percent = base_percent
+        self.span_percent = span_percent
+        self.step = step
+        self.total_steps = total_steps
+        self.last_percent = -1
+
+    def write(self, s):
+        result = super().write(s)
+        if self.total_records:
+            matches = re.findall(r"Processed (\d+) object", s)
+            if matches:
+                processed = int(matches[-1])
+                percent = self.base_percent + int(processed / self.total_records * self.span_percent)
+                percent = min(percent, self.base_percent + self.span_percent)
+                if percent != self.last_percent:
+                    self.last_percent = percent
+                    _set_progress(
+                        self.task_id,
+                        self.step,
+                        "Восстановление базы данных... {}/{}".format(processed, self.total_records),
+                        total_steps=self.total_steps,
+                        percent=percent,
+                    )
+        return result
 
 
 def _get_production_models():
@@ -202,22 +280,24 @@ def _read_manifest(backup_dir):
         return None
 
 
-def create_db_dump(backup_dir):
+def create_db_dump(backup_dir, task_id=None):
     """Create a UTF-8 JSON dump of all production app data."""
     db_dump_path = backup_dir / "database.json"
+    total_records = sum(_get_model_counts().values())
     with open(db_dump_path, "w", encoding="utf-8") as dump_file:
+        writer = _DumpProgressWriter(dump_file, task_id, total_records)
         call_command(
             "dumpdata",
             "production",
             "--natural-foreign",
             "--natural-primary",
             "--indent=2",
-            stdout=dump_file,
+            stdout=writer,
         )
     return db_dump_path
 
 
-def create_media_archive(backup_dir):
+def create_media_archive(backup_dir, task_id=None):
     """Create a tar.gz archive of the media directory."""
     media_root = _get_media_root()
     archive_path = backup_dir / "media.tar.gz"
@@ -225,8 +305,46 @@ def create_media_archive(backup_dir):
     if not media_root.exists():
         return None
 
+    total_size = 0
+    for item in media_root.rglob("*"):
+        try:
+            if item.is_file():
+                total_size += item.stat().st_size
+        except OSError:
+            continue
+
+    processed_size = 0
+    last_percent = -1
+
+    def _filter(tarinfo):
+        nonlocal processed_size, last_percent
+        if tarinfo.isfile():
+            processed_size += tarinfo.size
+            if total_size:
+                fraction = processed_size / total_size
+                percent = min(90, 55 + int(fraction * 35))
+                if percent != last_percent:
+                    last_percent = percent
+                    _set_progress(
+                        task_id,
+                        2,
+                        "Архивирование медиафайлов... {}%".format(int(fraction * 100)),
+                        total_steps=4,
+                        percent=percent,
+                    )
+        return tarinfo
+
     with tarfile.open(archive_path, "w:gz") as tar:
-        tar.add(media_root, arcname="media")
+        tar.add(media_root, arcname="media", filter=_filter)
+
+    if task_id and last_percent < 90:
+        _set_progress(
+            task_id,
+            2,
+            "Архивирование медиафайлов...",
+            total_steps=4,
+            percent=90,
+        )
 
     return archive_path
 
@@ -238,46 +356,64 @@ def create_full_backup(task_id=None):
     backup_dir = backup_root / "backup_{}".format(timestamp)
     backup_dir.mkdir(parents=True, exist_ok=True)
 
-    if task_id:
-        _set_progress(task_id, 1, "Создание дампа базы данных...")
+    try:
+        if task_id:
+            _set_progress(task_id, 1, "Создание дампа базы данных...", total_steps=4, percent=5)
 
-    db_dump_path = create_db_dump(backup_dir)
+        db_dump_path = create_db_dump(backup_dir, task_id=task_id)
 
-    if task_id:
-        _set_progress(task_id, 2, "Архивирование медиафайлов...")
+        if task_id:
+            _set_progress(task_id, 2, "Архивирование медиафайлов...", total_steps=4, percent=55)
 
-    media_archive_path = create_media_archive(backup_dir)
+        media_archive_path = create_media_archive(backup_dir, task_id=task_id)
 
-    if task_id:
-        _set_progress(task_id, 3, "Сохранение манифеста...")
+        if task_id:
+            _set_progress(task_id, 3, "Сохранение манифеста...", total_steps=4, percent=92)
 
-    # Build a manifest with rich metadata so that backups can be validated
-    # on restore.
-    model_counts = _get_model_counts()
-    db_checksum = _compute_file_checksum(db_dump_path)
+        # Build a manifest with rich metadata so that backups can be validated
+        # on restore.
+        model_counts = _get_model_counts()
+        db_checksum = _compute_file_checksum(db_dump_path)
 
-    import django
-    manifest = {
-        "project": PROJECT_IDENTIFIER,
-        "timestamp": timestamp,
-        "created_at": timestamp,
-        "django_version": django.get_version(),
-        "db_dump": db_dump_path.name,
-        "db_checksum": db_checksum,
-        "db_record_count": sum(model_counts.values()),
-        "model_counts": model_counts,
-        "media_archive": media_archive_path.name if media_archive_path else None,
-        "migration_list": _get_migration_info(),
-    }
+        import django
+        manifest = {
+            "project": PROJECT_IDENTIFIER,
+            "timestamp": timestamp,
+            "created_at": timestamp,
+            "django_version": django.get_version(),
+            "db_dump": db_dump_path.name,
+            "db_checksum": db_checksum,
+            "db_record_count": sum(model_counts.values()),
+            "model_counts": model_counts,
+            "media_archive": media_archive_path.name if media_archive_path else None,
+            "migration_list": _get_migration_info(),
+        }
 
-    manifest_path = backup_dir / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        manifest_path = backup_dir / "manifest.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
-    if task_id:
-        _set_progress(task_id, 4, "Готово!")
-        clear_progress(task_id)
+        if task_id:
+            _set_progress(
+                task_id,
+                4,
+                "Бэкап '{}' успешно создан.".format(backup_dir.name),
+                total_steps=4,
+                percent=100,
+                status="completed",
+            )
 
-    return backup_dir
+        return backup_dir
+    except Exception as exc:
+        if task_id:
+            _set_progress(
+                task_id,
+                0,
+                "Ошибка: {}".format(str(exc)),
+                total_steps=4,
+                percent=0,
+                status="error",
+            )
+        raise
 
 
 def _get_migration_info():
@@ -344,30 +480,57 @@ def _validate_backup_manifest(backup_dir):
     return True, manifest
 
 
-def _do_load_data(db_dump_path, task_id=None):
+def _do_load_data(
+    db_dump_path,
+    task_id=None,
+    total_records=None,
+    base_percent=10,
+    span_percent=50,
+    step=2,
+    total_steps=4,
+):
     """Run loaddata and return (success, message, output_str).
 
     loaddata manages its own transaction — do NOT wrap it in
     transaction.atomic() because that prevents proper rollback on
     IntegrityError in PostgreSQL with large datasets.
     """
-    stdout = io.StringIO()
+    if task_id and total_records:
+        try:
+            total_records = int(total_records)
+        except (TypeError, ValueError):
+            total_records = None
+    else:
+        total_records = None
+
+    if task_id and total_records:
+        stdout = _LoadProgressWriter(
+            task_id,
+            total_records,
+            base_percent,
+            span_percent,
+            step,
+            total_steps,
+        )
+    else:
+        stdout = io.StringIO()
+
     try:
         call_command(
             "loaddata",
             str(db_dump_path),
-            verbosity=2,
+            verbosity=3,
             stdout=stdout,
         )
-        logger.info("[load_data] loaddata stdout: %s", stdout.getvalue())
+        logger.info("[load_data] loaddata stdout: %s", stdout.getvalue()[-2000:])
         return True, "", stdout.getvalue()
     except Exception as e:
         logger.error("[load_data] loaddata failed: %s", str(e))
-        logger.info("[load_data] loaddata stdout before error: %s", stdout.getvalue())
+        logger.info("[load_data] loaddata stdout before error: %s", stdout.getvalue()[-4000:])
         return False, str(e), stdout.getvalue()
 
 
-def _restore_database(db_dump_path, task_id=None):
+def _restore_database(db_dump_path, task_id=None, total_records=None):
     """Clear production data and load the fixture via loaddata.
 
     This function intentionally does NOT wrap loaddata in an outer
@@ -376,16 +539,23 @@ def _restore_database(db_dump_path, task_id=None):
     even when loaddata raises an IntegrityError.
     """
     if task_id:
-        _set_progress(task_id, 1, "Очистка текущих данных...")
+        _set_progress(task_id, 1, "Очистка текущих данных...", total_steps=4, percent=10)
 
     # Clear existing data first — loaddata only INSERTs, it does not DELETE.
     _clear_production_data()
 
     if task_id:
-        _set_progress(task_id, 2, "Восстановление базы данных...")
+        _set_progress(task_id, 2, "Восстановление базы данных...", total_steps=4, percent=10)
 
-    # loaddata manages its own transaction internally.
-    success, error_or_output, output = _do_load_data(db_dump_path, task_id)
+    success, error_or_output, output = _do_load_data(
+        db_dump_path,
+        task_id=task_id,
+        total_records=total_records,
+        base_percent=10,
+        span_percent=50,
+        step=2,
+        total_steps=4,
+    )
 
     if not success:
         return False, "Ошибка загрузки данных: {}".format(error_or_output)
@@ -401,21 +571,29 @@ def _restore_database(db_dump_path, task_id=None):
     if loaded_count == 0:
         return False, "Данные не загружены: таблица Production пуста после loaddata."
 
+    if task_id:
+        _set_progress(task_id, 2, "База данных восстановлена.", total_steps=4, percent=60)
+
     return True, "База данных восстановлена. Записей: {}".format(loaded_count)
 
 
-def _restore_media(media_archive_path, task_id=None, media_step=3):
-    """Restore media files from a tar.gz archive.
-
-    Args:
-        media_archive_path: Path to the media.tar.gz archive.
-        task_id: Optional task ID for progress tracking.
-        media_step: Step number to report during media restore (3 for
-            restore_backup flow which maxes at 4, 4 for upload flow which
-            maxes at 5).
-    """
+def _restore_media(
+    media_archive_path,
+    task_id=None,
+    media_step=3,
+    total_steps=4,
+    base_percent=60,
+    span_percent=30,
+):
+    """Restore media files from a tar.gz archive."""
     if task_id:
-        _set_progress(task_id, media_step, "Восстановление медиафайлов...")
+        _set_progress(
+            task_id,
+            media_step,
+            "Восстановление медиафайлов...",
+            total_steps=total_steps,
+            percent=base_percent,
+        )
 
     media_root = _get_media_root()
     _clear_directory_contents(media_root)
@@ -436,6 +614,15 @@ def _restore_media(media_archive_path, task_id=None, media_step=3):
             shutil.move(str(item), str(dest))
         shutil.rmtree(extracted_media, ignore_errors=True)
 
+    if task_id:
+        _set_progress(
+            task_id,
+            media_step,
+            "Медиафайлы восстановлены.",
+            total_steps=total_steps,
+            percent=base_percent + span_percent,
+        )
+
 
 def restore_backup(backup_name, restore_db=True, restore_media=True, task_id=None):
     """Restore a backup by name. Returns (success, message)."""
@@ -443,14 +630,17 @@ def restore_backup(backup_name, restore_db=True, restore_media=True, task_id=Non
     backup_dir = backup_root / backup_name
 
     if not backup_dir.exists():
-        return False, "Бэкап '{}' не найден.".format(backup_name)
+        msg = "Бэкап '{}' не найден.".format(backup_name)
+        if task_id:
+            _set_progress(task_id, 0, msg, total_steps=4, percent=0, status="error")
+        return False, msg
 
     # Validate manifest — check project identifier and archive integrity.
     is_valid, manifest_or_msg = _validate_backup_manifest(backup_dir)
     if not is_valid:
         msg = str(manifest_or_msg)
         if task_id:
-            _set_progress(task_id, 0, "Ошибка: {}".format(msg))
+            _set_progress(task_id, 0, msg, total_steps=4, percent=0, status="error")
         return False, msg
 
     manifest = manifest_or_msg
@@ -461,14 +651,20 @@ def restore_backup(backup_name, restore_db=True, restore_media=True, task_id=Non
     db_dump_path = backup_dir / manifest.get("db_dump", "database.json")
 
     if restore_db and not db_dump_path.exists():
-        return False, "Файл {} не найден в бэкапе.".format(db_dump_path.name)
+        msg = "Файл {} не найден в бэкапе.".format(db_dump_path.name)
+        if task_id:
+            _set_progress(task_id, 0, msg, total_steps=4, percent=0, status="error")
+        return False, msg
 
     # Determine whether media archive exists in this backup.
     has_media = manifest.get("media_archive") is not None
     if restore_media and has_media:
         media_archive_path = backup_dir / manifest["media_archive"]
         if not media_archive_path.exists():
-            return False, "Файл {} не найден в бэкапе.".format(manifest["media_archive"])
+            msg = "Файл {} не найден в бэкапе.".format(manifest["media_archive"])
+            if task_id:
+                _set_progress(task_id, 0, msg, total_steps=4, percent=0, status="error")
+            return False, msg
     else:
         media_archive_path = None
         if restore_media and not has_media:
@@ -476,27 +672,44 @@ def restore_backup(backup_name, restore_db=True, restore_media=True, task_id=Non
 
     try:
         if task_id:
-            _set_progress(task_id, 1, "Восстановление из бэкапа '{}': {} записей...".format(
-                backup_name, manifest.get("db_record_count", "?")))
+            _set_progress(
+                task_id,
+                1,
+                "Восстановление из бэкапа '{}': {} записей...".format(
+                    backup_name, manifest.get("db_record_count", "?")),
+                total_steps=4,
+                percent=5,
+            )
 
         if restore_db:
-            success, msg = _restore_database(db_dump_path, task_id)
+            success, msg = _restore_database(
+                db_dump_path,
+                task_id=task_id,
+                total_records=manifest.get("db_record_count"),
+            )
             if not success:
                 if task_id:
-                    _set_progress(task_id, 0, "Ошибка: {}".format(msg))
+                    _set_progress(task_id, 0, "Ошибка: {}".format(msg), total_steps=4, percent=0, status="error")
                 return False, msg
 
         if restore_media and media_archive_path:
             _restore_media(media_archive_path, task_id)
 
+        success_message = "Бэкап '{}' успешно восстановлен.".format(backup_name)
         if task_id:
-            _set_progress(task_id, 4, "Готово!")
-            clear_progress(task_id)
+            _set_progress(
+                task_id,
+                4,
+                success_message,
+                total_steps=4,
+                percent=100,
+                status="completed",
+            )
 
-        return True, "Бэкап '{}' успешно восстановлен.".format(backup_name)
+        return True, success_message
     except Exception as e:
         if task_id:
-            _set_progress(task_id, 0, "Ошибка: {}".format(str(e)))
+            _set_progress(task_id, 0, "Ошибка: {}".format(str(e)), total_steps=4, percent=0, status="error")
         return False, "Ошибка при восстановлении: {}".format(str(e))
 
 
@@ -676,13 +889,12 @@ def upload_and_restore(archive_file, task_id=None):
     Extracts the archive, looks for database.json and media.tar.gz inside.
     Returns (success, message)."""
     if task_id:
-        _set_progress(task_id, 1, "Сохранение загруженного архива...")
+        _set_progress(task_id, 1, "Сохранение загруженного архива...", total_steps=5, percent=5)
 
     logger.info("[upload_and_restore] task_id=%s archive_name=%s archive_size=%s",
                 task_id, getattr(archive_file, "name", "?"), getattr(archive_file, "size", "?"))
 
-    temp_dir = Path(NamedTemporaryFile(delete=False).name + "_restore")
-    temp_dir.mkdir(parents=True, exist_ok=True)
+    temp_dir = Path(tempfile.mkdtemp(prefix="mes_restore_"))
 
     archive_path = temp_dir / "uploaded.tar.gz"
     with open(archive_path, "wb") as f:
@@ -700,7 +912,7 @@ def upload_and_restore(archive_file, task_id=None):
 
     try:
         if task_id:
-            _set_progress(task_id, 2, "Извлечение архива...")
+            _set_progress(task_id, 2, "Извлечение архива...", total_steps=5, percent=15)
 
         logger.info("[upload_and_restore] archive saved to %s, size=%d", archive_path, archive_path.stat().st_size)
 
@@ -720,8 +932,11 @@ def upload_and_restore(archive_file, task_id=None):
         logger.info("[upload_and_restore] db_dump_path=%s media_archive_path=%s", db_dump_path, media_archive_path)
 
         if not db_dump_path:
+            msg = "В архиве не найден database.json."
             logger.error("[upload_and_restore] database.json not found in archive")
-            return False, "В архиве не найден database.json."
+            if task_id:
+                _set_progress(task_id, 0, "Ошибка: {}".format(msg), total_steps=5, percent=0, status="error")
+            return False, msg
 
         db_size = db_dump_path.stat().st_size
         logger.info("[upload_and_restore] database.json size=%d bytes", db_size)
@@ -743,19 +958,28 @@ def upload_and_restore(archive_file, task_id=None):
             logger.info("[upload_and_restore] manifest: %s", json.dumps(manifest)[:500])
             project = manifest.get("project")
             if project and project != PROJECT_IDENTIFIER:
-                logger.error("[upload_and_restore] archive is for project '%s', expected '%s'",
-                             project, PROJECT_IDENTIFIER)
-                if task_id:
-                    _set_progress(task_id, 0, "Ошибка: архив предназначен для другого проекта")
-                return False, (
+                msg = (
                     "Архив предназначен для другого проекта (project='{}'). "
                     "Ожидается '{}'.".format(project, PROJECT_IDENTIFIER)
                 )
+                logger.error("[upload_and_restore] archive is for project '%s', expected '%s'",
+                             project, PROJECT_IDENTIFIER)
+                if task_id:
+                    _set_progress(task_id, 0, "Ошибка: {}".format(msg), total_steps=5, percent=0, status="error")
+                return False, msg
             if task_id:
-                _set_progress(task_id, 2, "Архив проверен: project={}, {} записей".format(
-                    project or "неизвестно", manifest.get("db_record_count", "?")))
+                _set_progress(
+                    task_id,
+                    2,
+                    "Архив проверен: project={}, {} записей".format(
+                        project or "неизвестно", manifest.get("db_record_count", "?")),
+                    total_steps=5,
+                    percent=15,
+                )
         else:
             logger.info("[upload_and_restore] no manifest.json found in archive, proceeding without validation")
+
+        total_records = manifest.get("db_record_count") if manifest else None
 
         # Count records before restore for logging.
         pr_model_class = apps.get_model("production", "production")
@@ -764,38 +988,52 @@ def upload_and_restore(archive_file, task_id=None):
 
         # Restore database (includes clearing existing data + loaddata).
         if task_id:
-            _set_progress(task_id, 3, "Восстановление базы данных...")
+            _set_progress(task_id, 3, "Восстановление базы данных...", total_steps=5, percent=20)
 
-        success, msg = _restore_database_internal(db_dump_path, task_id)
+        success, msg = _restore_database_internal(db_dump_path, task_id, total_records)
         if not success:
             if task_id:
-                _set_progress(task_id, 0, "Ошибка: {}".format(msg))
+                _set_progress(task_id, 0, "Ошибка: {}".format(msg), total_steps=5, percent=0, status="error")
             return False, msg
 
         # Restore media (if present in the archive).
         if media_archive_path:
-            _restore_media(media_archive_path, task_id, media_step=4)
+            _restore_media(
+                media_archive_path,
+                task_id,
+                media_step=4,
+                total_steps=5,
+                base_percent=70,
+                span_percent=20,
+            )
 
         # Count records after restore.
         prod_count_after = pr_model_class.objects.count()
         logger.info("[upload_and_restore] records AFTER loaddata: %d", prod_count_after)
 
+        success_message = "Восстановление из загруженного архива выполнено успешно."
         if task_id:
-            _set_progress(task_id, 5, "Готово!")
-            clear_progress(task_id)
+            _set_progress(
+                task_id,
+                5,
+                success_message,
+                total_steps=5,
+                percent=100,
+                status="completed",
+            )
 
         logger.info("[upload_and_restore] restore completed successfully")
-        return True, "Восстановление из загруженного архива выполнено успешно."
+        return True, success_message
     except Exception as e:
         logger.exception("[upload_and_restore] error: %s", str(e))
         if task_id:
-            _set_progress(task_id, 0, "Ошибка: {}".format(str(e)))
+            _set_progress(task_id, 0, "Ошибка: {}".format(str(e)), total_steps=5, percent=0, status="error")
         return False, "Ошибка при восстановлении: {}".format(str(e))
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def _restore_database_internal(db_dump_path, task_id=None):
+def _restore_database_internal(db_dump_path, task_id=None, total_records=None):
     """Internal database restore used by upload_and_restore.
     Same logic as _restore_database but without the manifest validation
     (which is done by the caller).
@@ -804,15 +1042,22 @@ def _restore_database_internal(db_dump_path, task_id=None):
     of upload_and_restore (1=save archive, 2=extract, 3=db restore,
     4=media, 5=done).
     """
-    # Clear existing data first.
     if task_id:
-        _set_progress(task_id, 3, "Очистка текущих данных...")
+        _set_progress(task_id, 3, "Очистка текущих данных...", total_steps=5, percent=20)
     _clear_production_data()
 
     if task_id:
-        _set_progress(task_id, 3, "Восстановление базы данных (loaddata)...")
+        _set_progress(task_id, 3, "Восстановление базы данных (loaddata)...", total_steps=5, percent=20)
 
-    success, error_or_output, output = _do_load_data(db_dump_path, task_id)
+    success, error_or_output, output = _do_load_data(
+        db_dump_path,
+        task_id=task_id,
+        total_records=total_records,
+        base_percent=20,
+        span_percent=50,
+        step=3,
+        total_steps=5,
+    )
     if not success:
         return False, "Ошибка загрузки данных: {}".format(error_or_output)
 
@@ -823,5 +1068,8 @@ def _restore_database_internal(db_dump_path, task_id=None):
 
     total_counts = _get_model_counts()
     logger.info("[_restore_database_internal] Loaded counts: %s", json.dumps(total_counts))
+
+    if task_id:
+        _set_progress(task_id, 3, "База данных восстановлена.", total_steps=5, percent=70)
 
     return True, "База данных восстановлена. Записей: {}".format(loaded_count)

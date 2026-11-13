@@ -1,3 +1,6 @@
+import io
+import logging
+import threading
 import uuid
 
 from django.contrib import messages
@@ -7,21 +10,22 @@ from django.shortcuts import redirect
 from django.template.response import TemplateResponse
 from django.urls import path
 
-from backup.forms import RestoreForm, UploadRestoreForm, WipeConfirmForm
+from backup.forms import UploadRestoreForm, WipeConfirmForm
 from backup.utils import (
-    PROJECT_IDENTIFIER,
-    _read_manifest,
     _set_progress,
+    consume_progress,
     create_full_backup,
     download_backup,
-    get_progress,
     get_backup_info,
+    get_progress,
     inspect_uploaded_archive,
     list_backups,
     restore_backup,
     upload_and_restore,
     wipe_all_data,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class BackupViews:
@@ -33,10 +37,9 @@ class BackupViews:
             path("backup/create/", self.admin_site.admin_view(self.create_backup), name="backup_create"),
             path("backup/create-bg/", self.admin_site.admin_view(self.create_backup_bg), name="backup_create_bg"),
             path("backup/progress/<str:task_id>/", self.admin_site.admin_view(self.progress_view), name="backup_progress"),
-            path("backup/list/", self.admin_site.admin_view(self.list_backups_view), name="backup_list"),
+            path("backup/list/", self.admin_site.admin_view(self.redirect_to_index), name="backup_list"),
             path("backup/download/<str:backup_name>/", self.admin_site.admin_view(self.download_view), name="backup_download"),
-            path("backup/restore/", self.admin_site.admin_view(self.restore_view), name="backup_restore"),
-            path("backup/restore-bg/<str:backup_name>/", self.admin_site.admin_view(self.restore_backup_bg), name="backup_restore_bg"),
+            path("backup/restore/", self.admin_site.admin_view(self.redirect_to_index), name="backup_restore"),
             path("backup/restore-upload/", self.admin_site.admin_view(self.restore_upload_view), name="backup_restore_upload"),
             path("backup/restore-upload-inspect/", self.admin_site.admin_view(self.restore_upload_inspect), name="backup_restore_upload_inspect"),
             path("backup/restore-upload-bg/<str:task_id>/", self.admin_site.admin_view(self.restore_upload_bg), name="backup_restore_upload_bg"),
@@ -50,20 +53,41 @@ class BackupViews:
     def _is_superuser(self, request):
         return request.user.is_active and request.user.is_superuser
 
-    def _check_superuser(self, request):
-        if not self._is_superuser(request):
-            return redirect("admin:login")
-        return None
+    def redirect_to_index(self, request):
+        return redirect("mes_admin:backup_index")
 
     def index_view(self, request):
         if not self._is_superuser(request):
             return redirect("admin:login")
 
+        task_id = request.GET.get("task")
+        if task_id:
+            data = get_progress(task_id)
+            if data and data.get("status") in ("completed", "error", None):
+                consume_progress(task_id)
+                if data.get("status") == "error" or data.get("step") == 0:
+                    messages.error(request, data.get("message", "Ошибка операции."))
+                else:
+                    messages.success(request, data.get("message", "Операция завершена."))
+            return redirect("mes_admin:backup_index")
+
         backups = list_backups()
+        paginator = Paginator(backups, 20)
+        page_number = request.GET.get("page")
+        page_obj = paginator.get_page(page_number)
+
+        backup_infos = []
+        for backup in page_obj:
+            info = get_backup_info(backup["name"])
+            if info:
+                backup_infos.append(info)
+
         context = self.admin_site.each_context(request)
         context.update({
             "title": "Резервное копирование",
-            "backup_count": len(backups),
+            "backups": backup_infos,
+            "page_obj": page_obj,
+            "backup_count": paginator.count,
         })
         return TemplateResponse(request, "admin/backup/index.html", context)
 
@@ -82,20 +106,26 @@ class BackupViews:
 
     def create_backup_bg(self, request):
         if not self._is_superuser(request):
-            return redirect("admin:login")
+            return JsonResponse({"error": "Unauthorized"}, status=401)
 
         task_id = str(uuid.uuid4())
+        _set_progress(task_id, 0, "Запуск создания бэкапа...", total_steps=4, percent=0)
 
-        # Set initial progress so the first poll doesn't see None (which
-        # progress_view interprets as "completed").
-        _set_progress(task_id, 0, "Запуск создания бэкапа...")
+        def run():
+            try:
+                create_full_backup(task_id=task_id)
+            except Exception as exc:
+                logger.exception("[create_backup_bg] task_id=%s failed: %s", task_id, exc)
+                _set_progress(
+                    task_id,
+                    0,
+                    "Ошибка: {}".format(str(exc)),
+                    total_steps=4,
+                    percent=0,
+                    status="error",
+                )
 
-        import threading
-
-        thread = threading.Thread(
-            target=create_full_backup,
-            kwargs={"task_id": task_id},
-        )
+        thread = threading.Thread(target=run)
         thread.daemon = True
         thread.start()
 
@@ -107,31 +137,16 @@ class BackupViews:
 
         progress = get_progress(task_id)
         if progress is None:
-            return JsonResponse({"status": "completed", "step": 4, "message": "Готово!"})
+            return JsonResponse({
+                "status": "completed",
+                "step": 4,
+                "total_steps": 4,
+                "percent": 100,
+                "message": "Готово!",
+            })
+        if "status" not in progress:
+            progress["status"] = "error" if progress.get("step") == 0 else "running"
         return JsonResponse(progress)
-
-    def list_backups_view(self, request):
-        if not self._is_superuser(request):
-            return redirect("admin:login")
-
-        backups = list_backups()
-        paginator = Paginator(backups, 20)
-        page_number = request.GET.get("page")
-        page_obj = paginator.get_page(page_number)
-
-        backup_infos = []
-        for b in page_obj:
-            info = get_backup_info(b["name"])
-            if info:
-                backup_infos.append(info)
-
-        context = self.admin_site.each_context(request)
-        context.update({
-            "title": "Список бэкапов",
-            "backups": backup_infos,
-            "page_obj": page_obj,
-        })
-        return TemplateResponse(request, "admin/backup/list.html", context)
 
     def download_view(self, request, backup_name):
         if not self._is_superuser(request):
@@ -140,50 +155,10 @@ class BackupViews:
         archive = download_backup(backup_name)
         if archive is None:
             messages.error(request, "Бэкап '{}' не найден.".format(backup_name))
-            return redirect("mes_admin:backup_list")
+            return redirect("mes_admin:backup_index")
 
         response = FileResponse(archive, as_attachment=True, filename="{}.tar.gz".format(backup_name))
         return response
-
-    def restore_view(self, request):
-        if not self._is_superuser(request):
-            return redirect("admin:login")
-
-        if request.method == "POST":
-            form = RestoreForm(request.POST)
-            if form.is_valid():
-                backup_name = form.cleaned_data["backup_name"]
-                return redirect("mes_admin:backup_restore_confirm", backup_name=backup_name)
-        else:
-            form = RestoreForm()
-
-        context = self.admin_site.each_context(request)
-        context.update({
-            "title": "Восстановление из бэкапа",
-            "form": form,
-        })
-        return TemplateResponse(request, "admin/backup/restore.html", context)
-
-    def restore_backup_bg(self, request, backup_name):
-        if not self._is_superuser(request):
-            return JsonResponse({"error": "Unauthorized"}, status=401)
-
-        task_id = str(uuid.uuid4())
-
-        # Set initial progress so the first poll doesn't see None (which
-        # progress_view interprets as "completed").
-        _set_progress(task_id, 0, "Запуск восстановления...")
-
-        import threading
-
-        thread = threading.Thread(
-            target=restore_backup,
-            kwargs={"backup_name": backup_name, "restore_db": True, "restore_media": True, "task_id": task_id},
-        )
-        thread.daemon = True
-        thread.start()
-
-        return JsonResponse({"task_id": task_id})
 
     def restore_upload_view(self, request):
         if not self._is_superuser(request):
@@ -194,29 +169,32 @@ class BackupViews:
             if form.is_valid():
                 task_id = str(uuid.uuid4())
 
-                # Read file content into memory before starting the thread.
                 archive_file = form.cleaned_data["archive"]
 
-                # Inspect the archive to display its info on the confirm page.
                 archive_info = inspect_uploaded_archive(archive_file)
-                archive_file.seek(0)  # Reset for reading
+                archive_file.seek(0)
 
-                file_content = archive_file.read()
-                # Store archive info in session for the confirm page (non-JS fallback).
                 if "error" not in archive_info:
                     request.session["restore_upload_archive_info"] = archive_info
 
-                # Set initial progress so the first poll doesn't see None (which
-                # progress_view interprets as "completed").
-                _set_progress(task_id, 0, "Запуск восстановления...")
+                file_content = archive_file.read()
+                _set_progress(task_id, 0, "Запуск восстановления...", total_steps=5, percent=0)
 
-                import io
-                import threading
+                def run():
+                    try:
+                        upload_and_restore(archive_file=io.BytesIO(file_content), task_id=task_id)
+                    except Exception as exc:
+                        logger.exception("[restore_upload_view] task_id=%s failed: %s", task_id, exc)
+                        _set_progress(
+                            task_id,
+                            0,
+                            "Ошибка: {}".format(str(exc)),
+                            total_steps=5,
+                            percent=0,
+                            status="error",
+                        )
 
-                thread = threading.Thread(
-                    target=upload_and_restore,
-                    kwargs={"archive_file": io.BytesIO(file_content), "task_id": task_id},
-                )
+                thread = threading.Thread(target=run)
                 thread.daemon = True
                 thread.start()
 
@@ -251,11 +229,6 @@ class BackupViews:
         return TemplateResponse(request, "admin/backup/restore_upload_confirm.html", context)
 
     def restore_upload_inspect(self, request):
-        """Inspect an uploaded archive and return its manifest info as JSON.
-
-        Called via AJAX when the user selects a file on the restore-upload
-        page, so archive metadata can be displayed before the restore starts.
-        """
         if not self._is_superuser(request):
             return JsonResponse({"error": "Unauthorized"}, status=401)
 
@@ -271,10 +244,6 @@ class BackupViews:
         return JsonResponse(info)
 
     def restore_upload_bg(self, request, task_id):
-        import io
-        import logging
-        logger = logging.getLogger(__name__)
-
         if not self._is_superuser(request):
             return JsonResponse({"error": "Unauthorized"}, status=401)
 
@@ -283,24 +252,31 @@ class BackupViews:
             logger.warning("[restore_upload_bg] No archive file in request, task_id=%s", task_id)
             return JsonResponse({"error": "No file uploaded"}, status=400)
 
-        # Read file content into memory before starting the thread.
-        # Django's UploadedFile temp files are cleaned up when the request
-        # ends, which happens right after we return the response — before
-        # the background thread has a chance to read them.
         file_content = archive.read()
-        logger.info("[restore_upload_bg] Read archive into memory: name=%s size=%d, task_id=%s",
-                    getattr(archive, "name", "?"), len(file_content), task_id)
-
-        # Set initial progress so the first poll doesn't see None (which
-        # progress_view interprets as "completed").
-        _set_progress(task_id, 0, "Запуск восстановления...")
-
-        import threading
-
-        thread = threading.Thread(
-            target=upload_and_restore,
-            kwargs={"archive_file": io.BytesIO(file_content), "task_id": task_id},
+        logger.info(
+            "[restore_upload_bg] Read archive into memory: name=%s size=%d, task_id=%s",
+            getattr(archive, "name", "?"),
+            len(file_content),
+            task_id,
         )
+
+        _set_progress(task_id, 0, "Запуск восстановления...", total_steps=5, percent=0)
+
+        def run():
+            try:
+                upload_and_restore(archive_file=io.BytesIO(file_content), task_id=task_id)
+            except Exception as exc:
+                logger.exception("[restore_upload_bg] task_id=%s failed: %s", task_id, exc)
+                _set_progress(
+                    task_id,
+                    0,
+                    "Ошибка: {}".format(str(exc)),
+                    total_steps=5,
+                    percent=0,
+                    status="error",
+                )
+
+        thread = threading.Thread(target=run)
         thread.daemon = True
         thread.start()
 
@@ -312,17 +288,28 @@ class BackupViews:
 
         if request.method == "POST":
             task_id = str(uuid.uuid4())
+            _set_progress(task_id, 0, "Запуск восстановления...", total_steps=4, percent=0)
 
-            # Set initial progress so the first poll doesn't see None (which
-            # progress_view interprets as "completed").
-            _set_progress(task_id, 0, "Запуск восстановления...")
+            def run():
+                try:
+                    restore_backup(
+                        backup_name=backup_name,
+                        restore_db=True,
+                        restore_media=True,
+                        task_id=task_id,
+                    )
+                except Exception as exc:
+                    logger.exception("[restore_confirm] task_id=%s failed: %s", task_id, exc)
+                    _set_progress(
+                        task_id,
+                        0,
+                        "Ошибка: {}".format(str(exc)),
+                        total_steps=4,
+                        percent=0,
+                        status="error",
+                    )
 
-            import threading
-
-            thread = threading.Thread(
-                target=restore_backup,
-                kwargs={"backup_name": backup_name, "restore_db": True, "restore_media": True, "task_id": task_id},
-            )
+            thread = threading.Thread(target=run)
             thread.daemon = True
             thread.start()
 
@@ -331,7 +318,7 @@ class BackupViews:
         backup_info = get_backup_info(backup_name)
         if not backup_info:
             messages.error(request, "Бэкап '{}' не найден.".format(backup_name))
-            return redirect("mes_admin:backup_list")
+            return redirect("mes_admin:backup_index")
 
         context = self.admin_site.each_context(request)
         context.update({

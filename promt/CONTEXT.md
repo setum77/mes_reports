@@ -1,8 +1,10 @@
 # CONTEXT — MES Reports
 
-Контекст проекта для агентов и новых разработчиков. Составлен 2026-11-11.
-Рабочее дерево содержит незакоммиченную переработку БД и отчётов (база — `232c0ee`);
-актуальное состояние — по `git status` и файлам, а не по последнему коммиту.
+Контекст проекта для агентов и новых разработчиков. Составлен 2026-11-11,
+обновлён 2026-11-13.
+Рабочее дерево содержит незакоммиченную переработку БД, отчётов и раздела бэкапа
+(база — `232c0ee`); актуальное состояние — по `git status` и файлам, а не по
+последнему коммиту.
 
 Документ описывает: предметную область, архитектуру, поток данных, модели, отчёты,
 инварианты и команды проверки. Точные требования к отчётам — в `promt/promt_mes_reports/`,
@@ -41,12 +43,14 @@ Django-приложение для приёма Excel-выгрузок из MES-
 
 ```powershell
 uv sync --frozen
+uv sync --frozen --extra dev
 uv run python src/manage.py migrate
 uv run python src/manage.py runserver
-uv run pytest
+uv run --extra dev python -m pytest
 ```
 
-Если `uv` недоступен (нет доступа к `AppData\Local\uv\cache`), использовать venv напрямую:
+Если `uv` недоступен (нет доступа к `AppData\Local\uv\cache`), использовать venv напрямую
+(pytest должен быть установлен в venv):
 
 ```powershell
 .\.venv\Scripts\python.exe src\manage.py check
@@ -86,7 +90,7 @@ tests/                      test_reports.py, test_excel_parser.py, test_settings
 docker/                     Dockerfile, docker-compose.yml, nginx, entrypoint.sh
 promt/
   promt_mes_reports/        исходные ТЗ (Obsidian)
-  plans/                    планы работ 00…04
+  plans/                    планы работ 00…05
 ```
 
 ---
@@ -274,15 +278,42 @@ upsert-ит `Lot`/`Station`/`ControlUnit` и создаёт `Production` (вне
 
 - Подключается к кастомной админке через `setup_backup_urls` (`/admin/backup/...`),
   доступ только у superuser.
+- Главная страница `/admin/backup/` — один заголовок, три кнопки («Создать бэкап»,
+  «Восстановить из архива», «Очистить все данные») и таблица бэкапов с пагинацией
+  по 20 (имя, время, размер, записей, файлы, действия «Восстановить»/«Скачать»).
 - Полный бэкап: дамп БД (`database.json` в `UTF-8`) + архив медиа + манифест
   (контрольные суммы, идентификатор проекта `mes_reports`, количество моделей,
   список миграций). Файлы — в `BACKUP_ROOT` (`src/backups/` по умолчанию).
-- Восстановление: проверка манифеста → очистка production-моделей (`Production`,
-  `FaultAttachment`, `FaultJournal`, `UnitPhoto`, `ControlUnit`, `Lot`, `Station`,
-  `TestDataTranslation`) → сброс sequences → `loaddata` → восстановление медиа. Долгие
-  операции выполняются в фоновом потоке, прогресс — в файле (in-memory хранилище не
-  подходит: gunicorn запускается с `--workers 2`, воркеры не разделяют память).
-- Есть загрузка архива с inspect/подтверждением и полная очистка данных (`wipe`).
+- Создание бэкапа выполняется в фоновом потоке (`backup_create_bg`) и показывает
+  прогресс: дамп БД 5–55% (подсчёт сериализованных объектов через wrapper `dumpdata`),
+  архив медиа 55–90% (по размеру файлов через `tarfile.add(filter=...)`), манифест
+  90–100%. По завершении — сообщение на главной и новая строка в таблице.
+- Восстановление из бэкапа: проверка манифеста → очистка production-моделей
+  (`Production`, `FaultAttachment`, `FaultJournal`, `UnitPhoto`, `ControlUnit`,
+  `Lot`, `Station`, `TestDataTranslation`) → сброс sequences → `loaddata` →
+  восстановление медиа. Прогресс: 5% старт, 10–60% `loaddata`, 60–90% медиа,
+  100% финал. `loaddata` запускается с `verbosity=3`, wrapper парсит
+  `Processed N object(s).`; `total_records` берётся из `manifest.db_record_count`.
+- Восстановление из загруженного архива: inspect + XHR upload (0–50%), затем
+  серверная обработка 50–100%: сохранение архива 5%, распаковка 15%, `loaddata`
+  20–70%, медиа 70–90%, финал 100%.
+- Долгие операции выполняются в фоновом потоке; прогресс хранится в файле
+  (`tempfile.gettempdir()/mes_reports_progress/<task_id>.json`, в Docker —
+  `/tmp/mes_reports_progress/...`), потому что Gunicorn запускается с
+  `--workers 2` и воркеры не разделяют память. `progress_view` отдаёт
+  `status/percent`; после завершения JS редиректит на `/admin/backup/?task=<id>`,
+  главная страница показывает сообщение и удаляет файл прогресса.
+- Ошибки получают `status="error"`; прогресс-бар останавливается, показывается
+  сообщение, доступна кнопка «Назад в панель управления».
+- Общий partial `templates/admin/backup/_progress.html` (`MesBackupProgress`)
+  используется на страницах создания, восстановления и загрузки архива.
+- Удалены отдельные страницы «Список бэкапов» и «Восстановить из бэкапа»
+  (`list.html`, `restore.html`) и связанные view/формы (`RestoreForm`,
+  `list_backups_view`, `restore_view`, `restore_backup_bg`); старые URL
+  `backup/list/` и `backup/restore/` ведут на `backup_index`.
+- Есть полная очистка данных (`wipe`) с подтверждением `WIPE_ALL_DATA_CONFIRMED`.
+- Тесты: `tests/test_backup.py` (11 тестов: главная, прогресс, `consume_progress`,
+  редиректы, интеграционное создание бэкапа).
 
 ---
 
@@ -319,15 +350,16 @@ $env:PYTHONPATH="src"; .\.venv\Scripts\python.exe src\manage.py check
 .\.venv\Scripts\python.exe src\manage.py makemigrations --check --dry-run
 
 # Узкий прогон
-.\.venv\Scripts\python.exe -m pytest tests/test_reports.py -q
+uv run --extra dev python -m pytest tests/test_reports.py -q
 
 # Полный прогон (нужен PostgreSQL; pytest-django создаёт test_mes_report,
 # роли требуется CREATEDB)
-uv run pytest
+uv run --extra dev python -m pytest -q
 ```
 
-В `tests/` 122 теста (включая 4 доменных теста в `test_domain.py`). БД-тесты требуют
-запущенного PostgreSQL (`start`/`stop` в корне переводят службу `postgresql-x64-17`).
+В `tests/` 133 теста (включая 4 доменных теста в `test_domain.py` и 11 тестов
+бэкапа в `test_backup.py`). БД-тесты требуют запущенного PostgreSQL
+(`start`/`stop` в корне переводят службу `postgresql-x64-17`).
 
 ---
 
@@ -340,7 +372,7 @@ uv run pytest
 | Экспорт Excel | `ReportNExportView` в `views.py`; для №2/№3 — листы сводки и диаграмм |
 | Импорт/колонки | `uploads/excel_parser.py`, `uploads/forms.py`, `uploads/views.py` |
 | Модели/админка/миграции | `production/models.py`, `production/admin.py`, `production/stations.py`, `production/testdata.py`, `production/migrations/`, `mes_report3/admin_site.py` |
-| Бэкап | `backup/utils.py`, `backup/admin.py`, `templates/admin/backup/*` |
+| Бэкап | `backup/utils.py`, `backup/admin.py`, `templates/admin/backup/*`, `tests/test_backup.py` |
 | Доступ | `accounts/views.py`, `production/admin.py` |
 
 ---
@@ -350,6 +382,6 @@ uv run pytest
 - `README.md` — установка, Docker, переменные окружения, troubleshooting.
 - `AGENTS.md` — правила разработки для агентов (приоритет над этим файлом).
 - `promt/promt_mes_reports/` — исходные ТЗ по отчётам и данные (включая `*.xlsx/csv`).
-- `promt/plans/00-roadmap.md` … `04-db-rework.md` — планы доработок со статусами.
+- `promt/plans/00-roadmap.md` … `05-backup-rework.md` — планы доработок со статусами.
 - История: `git log --oneline`; ключевые этапы — переработка отчёта №5, исправления
   P0/P1, hardening (H1–H9), рефакторинг общей логики, переработка БД (`0007–0013`).

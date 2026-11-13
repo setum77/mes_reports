@@ -1,0 +1,118 @@
+<div id="backup-progress-container" class="progress-container" style="display: none; margin: 20px 0;">
+  <div class="progress-bar" style="width: 100%; background: #f0f0f0; border-radius: 4px; height: 24px; overflow: hidden;">
+    <div id="backup-progress-fill" style="width: 0%; background: var(--primary, #79aec8); height: 100%; transition: width 0.3s ease; line-height: 24px; color: white; text-align: center; font-size: 12px;">0%</div>
+  </div>
+  <div id="backup-progress-message" style="margin-top: 10px; font-size: 14px;">Ожидание...</div>
+</div>
+
+<div class="mes-dashboard__links" style="margin-top: 12px;">
+  <a href="{% url 'mes_admin:backup_index' %}" class="button">Назад в панель управления</a>
+</div>
+
+<script>
+(function() {
+    var container = document.getElementById("backup-progress-container");
+    var fill = document.getElementById("backup-progress-fill");
+    var message = document.getElementById("backup-progress-message");
+    var polling = null;
+    var activeOptions = null;
+    var defaultRedirect = "{% url 'mes_admin:backup_index' %}";
+
+    function clamp(value) {
+        return Math.max(0, Math.min(100, Math.round(value)));
+    }
+
+    function show() {
+        container.style.display = "block";
+    }
+
+    function setProgress(percent, text) {
+        var value = clamp(percent);
+        fill.style.background = "var(--primary, #79aec8)";
+        fill.style.width = value + "%";
+        fill.textContent = value + "%";
+        if (text) {
+            message.textContent = text;
+        }
+    }
+
+    function fail(text) {
+        setProgress(100, text || "Ошибка операции");
+        fill.style.background = "#e74c3c";
+        fill.textContent = "Ошибка";
+        if (polling) {
+            clearInterval(polling);
+            polling = null;
+        }
+        if (activeOptions && typeof activeOptions.onError === "function") {
+            activeOptions.onError(text);
+        }
+    }
+
+    function start(taskId, options) {
+        options = options || {};
+        activeOptions = options;
+
+        var minPercent = typeof options.minPercent === "number" ? options.minPercent : 0;
+        var maxPercent = typeof options.maxPercent === "number" ? options.maxPercent : 100;
+        var totalSteps = options.totalSteps || 4;
+        var redirectUrl = options.redirectUrl || defaultRedirect;
+
+        show();
+        setProgress(minPercent, "Ожидание...");
+
+        if (polling) {
+            clearInterval(polling);
+        }
+
+        polling = setInterval(function() {
+            fetch("/admin/backup/progress/" + encodeURIComponent(taskId) + "/", {
+                headers: {"X-Requested-With": "XMLHttpRequest"},
+                credentials: "same-origin"
+            })
+                .then(function(response) { return response.json(); })
+                .then(function(data) {
+                    if (data.error) {
+                        fail(data.error);
+                    } else if (data.status === "completed") {
+                        setProgress(100, data.message || "Готово!");
+                        clearInterval(polling);
+                        polling = null;
+                        setTimeout(function() {
+                            var separator = redirectUrl.indexOf("?") === -1 ? "?" : "&";
+                            window.location.href = redirectUrl + separator + "task=" + encodeURIComponent(taskId);
+                        }, 1500);
+                    } else if (data.status === "error") {
+                        fail(data.message || "Ошибка операции");
+                    } else {
+                        var percent = typeof data.percent === "number"
+                            ? data.percent
+                            : ((data.step || 0) / (data.total_steps || totalSteps)) * 100;
+                        var mapped = minPercent + (percent / 100) * (maxPercent - minPercent);
+                        setProgress(mapped, data.message || "Выполняется...");
+                    }
+                })
+                .catch(function() {
+                    fail("Ошибка соединения");
+                });
+        }, 700);
+    }
+
+    window.MesBackupProgress = {
+        show: show,
+        setProgress: setProgress,
+        fail: fail,
+        start: start
+    };
+
+    {% if task_id %}
+    document.addEventListener("DOMContentLoaded", function() {
+        start("{{ task_id|escapejs }}", {
+            minPercent: {{ min_percent|default:0 }},
+            maxPercent: {{ max_percent|default:100 }},
+            totalSteps: {{ total_steps|default:4 }}
+        });
+    });
+    {% endif %}
+})();
+</script>
