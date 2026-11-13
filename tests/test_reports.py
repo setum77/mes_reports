@@ -900,6 +900,60 @@ def test_report6_summary_includes_defect_and_photos():
 
 
 @pytest.mark.django_db
+def test_report6_summary_visible_to_anonymous():
+    """Report6View: Defect и Фотографии показываются без авторизации, без правки."""
+    pcs_no = "SN-REPORT6-ANON"
+    dt = timezone.make_aware(datetime(2026, 9, 15, 10, 0))
+    ProductionRecord.objects.create(
+        lot_number="LOT", production_spec="SPEC", subop_no=10,
+        pcs_no=pcs_no, created_date=dt, result="OK",
+    )
+    SNPhoto.objects.create(
+        pcs_no=pcs_no, image="sn_photos/2026/09/01/photo1.jpg",
+        caption="Фото 1", uploaded_by="admin",
+    )
+    response = Client().get(f"/reports/6/?pcs_no={pcs_no}")
+    content = response.content.decode()
+    assert response.status_code == 200
+    assert "Defect (брак)" in content
+    assert "Фотографии" in content
+    assert "photo-thumb" in content
+    assert "/media/sn_photos/2026/09/01/photo1.jpg" in content
+    # Без авторизации нет контролов изменения
+    assert "Установить брак" not in content
+    assert "snPhotoUploadModal" not in content
+    assert "/rename/" not in content
+    assert "/delete/" not in content
+
+
+@pytest.mark.django_db
+def test_report6_summary_edit_controls_visible_to_staff():
+    """Report6View: staff видит контролы правки Defect и фото."""
+    user = User.objects.create_user(
+        username="report6-anon-staff", password="password", is_staff=True
+    )
+    pcs_no = "SN-REPORT6-STAFF"
+    dt = timezone.make_aware(datetime(2026, 9, 15, 10, 0))
+    ProductionRecord.objects.create(
+        lot_number="LOT", production_spec="SPEC", subop_no=10,
+        pcs_no=pcs_no, created_date=dt, result="OK",
+    )
+    SNPhoto.objects.create(
+        pcs_no=pcs_no, image="sn_photos/2026/09/01/photo1.jpg",
+        caption="Фото 1", uploaded_by="admin",
+    )
+    client = Client()
+    client.force_login(user)
+    response = client.get(f"/reports/6/?pcs_no={pcs_no}")
+    content = response.content.decode()
+    assert response.status_code == 200
+    assert "Установить брак" in content
+    assert "snPhotoUploadModal" in content
+    assert "/rename/" in content
+    assert "/delete/" in content
+
+
+@pytest.mark.django_db
 def test_report6_set_defect_view_admin_only():
     """SNSetDefectView: только staff, устанавливает defect флаг."""
     user = User.objects.create_user(

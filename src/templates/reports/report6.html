@@ -114,10 +114,10 @@
                         <div class="col-sm-5 col-md summary-label text-muted small">Двойные проходы</div>
                         <div class="col-sm-7 col-md">{{ summary.double_passes|default:'' }}</div>
                     </div>
-                    {% if user.is_staff %}
                     <div class="row g-1 mt-2">
                         <div class="col-sm-5 col-md summary-label text-muted small">Defect (брак)</div>
                         <div class="col-sm-7 col-md d-flex align-items-center">
+                            {% if user.is_staff %}
                             <form method="post" action="{% url 'reports:sn_defect' summary.pcs_no %}" class="d-inline"
                                   onsubmit="return confirm('Установить брак для SN {{ summary.pcs_no }}?')">
                                 {% csrf_token %}
@@ -132,6 +132,7 @@
                                     Снять брак
                                 </button>
                             </form>
+                            {% endif %}
                             {% if summary.defect %}
                             <span class="badge bg-danger ms-2">Брак</span>
                             {% else %}
@@ -142,10 +143,12 @@
                     <div class="row g-1 mt-2">
                         <div class="col-sm-5 col-md summary-label text-muted small">Фотографии</div>
                         <div class="col-sm-7 col-md">
+                            {% if user.is_staff %}
                             <button type="button" class="btn btn-outline-primary btn-sm" data-bs-toggle="modal"
                                     data-bs-target="#snPhotoUploadModal">
                                 <i class="bi bi-plus"></i> Добавить
                             </button>
+                            {% endif %}
                             {% if summary.photos %}
                             <div class="mt-2">
                                 {% for photo in summary.photos %}
@@ -155,6 +158,7 @@
                                         <img src="{{ photo.url }}" alt="{{ photo.caption|escape }}" class="photo-thumb">
                                     </a>
                                     <span class="small text-truncate me-2">{{ photo.caption|default:photo.filename|truncatechars:30 }}</span>
+                                    {% if user.is_staff %}
                                     <form method="post" action="{% url 'reports:sn_photo_rename' photo.id %}" class="d-inline"
                                           onsubmit="return promptRename(this, '{{ photo.caption|escapejs }}')">
                                         {% csrf_token %}
@@ -169,6 +173,7 @@
                                             <i class="bi bi-trash"></i>
                                         </button>
                                     </form>
+                                    {% endif %}
                                 </div>
                                 {% endfor %}
                             </div>
@@ -177,7 +182,6 @@
                             {% endif %}
                         </div>
                     </div>
-                    {% endif %}
                 </div>
             </div>
         </div>

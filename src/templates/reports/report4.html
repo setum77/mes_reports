@@ -89,15 +89,31 @@
                     {% if row.photos %}
                     <div class="d-flex flex-column">
                         {% for photo in row.photos %}
-                        <a href="#" class="text-decoration-none open-photos-btn small py-1"
-                            data-photos="{{ row.photos|json_encode|escape }}"
-                            title="Просмотр фотографий">
-                            {{ photo.caption|default:photo.filename|truncatechars:40 }}
-                        </a>
+                        <div class="d-flex align-items-center mb-1">
+                            <a href="#" class="me-2 open-photos-btn small"
+                                data-photos="{{ row.photos|json_encode|escape }}"
+                                title="Просмотр фотографий">
+                                {{ photo.caption|default:photo.filename|truncatechars:40 }}
+                            </a>
+                            {% if user.is_staff %}
+                            <form method="post" action="{% url 'reports:sn_photo_delete' photo.id %}" class="d-inline ms-1"
+                                  onsubmit="return confirm('Удалить фотографию?')">
+                                {% csrf_token %}
+                                <input type="hidden" name="next" value="{% url 'reports:report4' %}">
+                                <button type="submit" class="btn btn-outline-danger btn-sm py-0 px-1" title="Удалить"><i class="bi bi-trash"></i></button>
+                            </form>
+                            {% endif %}
+                        </div>
                         {% endfor %}
                     </div>
                     {% else %}
                     <span class="text-muted small">—</span>
+                    {% endif %}
+                    {% if user.is_staff %}
+                    <button type="button" class="btn btn-outline-primary btn-sm mt-1" data-bs-toggle="modal"
+                            data-bs-target="#photoUploadModal{{ forloop.counter }}" title="Добавить фотографию">
+                        <i class="bi bi-plus"></i>
+                    </button>
                     {% endif %}
                 </td>
                 <td class="small">
@@ -132,7 +148,7 @@
                                   onsubmit="return confirm('Удалить фотографию?')">
                                 {% csrf_token %}
                                 <input type="hidden" name="next" value="{% url 'reports:report4' %}">
-                                <button type="submit" class="btn btn-outline-danger btn-sm py-0 px-1"><i class="bi bi-trash"></i></button>
+                                <button type="submit" class="btn btn-outline-danger btn-sm py-0 px-1" title="Удалить"><i class="bi bi-trash"></i></button>
                             </form>
                             {% endif %}
                         </div>
@@ -143,8 +159,8 @@
                     {% endif %}
                     {% if user.is_staff %}
                     <button type="button" class="btn btn-outline-primary btn-sm mt-1" data-bs-toggle="modal"
-                            data-bs-target="#manualPhotoUploadModal{{ forloop.counter }}">
-                        <i class="bi bi-plus"></i> Добавить
+                            data-bs-target="#photoUploadModal{{ forloop.counter }}" title="Добавить фотографию">
+                        <i class="bi bi-plus"></i>
                     </button>
                     {% endif %}
                 </td>
@@ -200,8 +216,8 @@
 </div>
 
 {% for row in data %}
-{% if row.is_manual and user.is_staff %}
-<div class="modal fade" id="manualPhotoUploadModal{{ forloop.counter }}" tabindex="-1" aria-hidden="true">
+{% if user.is_staff %}
+<div class="modal fade" id="photoUploadModal{{ forloop.counter }}" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
     <div class="modal-content">
       <form method="post" action="{% url 'reports:sn_photo_upload' row.pcs_no %}" enctype="multipart/form-data">

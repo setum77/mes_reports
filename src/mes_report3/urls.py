@@ -5,6 +5,8 @@ from django.contrib.auth.admin import GroupAdmin, UserAdmin
 from django.contrib.auth.models import Group, User
 from django.urls import include, path
 from django.http import HttpResponse
+from django.conf import settings
+from django.conf.urls.static import static
 
 from mes_report3.admin_site import SuperuserOnlyAdminMixin, mes_admin_site
 from reports.views import HomeView
@@ -36,3 +38,8 @@ urlpatterns = [
     path("reports/", include("reports.urls", namespace="reports")),
     path("", HomeView.as_view(), name="home"),
 ]
+
+# Раздача медиафайлов (фото БУ) в режиме DEBUG через runserver.
+# В production (DEBUG=False) static() возвращает пустой список, а /media/
+# обслуживает nginx.
+urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
