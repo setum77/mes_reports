@@ -2,9 +2,9 @@
 
 Контекст проекта для агентов и новых разработчиков. Составлен 2026-11-11,
 обновлён 2026-11-13.
-Рабочее дерево содержит незакоммиченную переработку БД, отчётов и раздела бэкапа
-(база — `232c0ee`); актуальное состояние — по `git status` и файлам, а не по
-последнему коммиту.
+Последние коммиты включают переработку БД, отчётов и раздела бэкапа, а также
+переработку отчёта №1 (`e0431fe`); актуальное состояние — по `git status` и файлам,
+а не по последнему коммиту.
 
 Документ описывает: предметную область, архитектуру, поток данных, модели, отчёты,
 инварианты и команды проверки. Точные требования к отчётам — в `promt/promt_mes_reports/`,
@@ -235,7 +235,7 @@ FaultJournal 1 ── * FaultAttachment
 
 | № | Страница | Фильтры | Содержание |
 |---|---|---|---|
-| 1 | Сводный по лотам | год (по умолчанию текущий), произвольный период | Лоты: Production (уник. OK на 010), Ok (уник. OK на 130), Difference, SN hasn’t finished production (Diff-SN, ссылки на отчёт 6, >10 — надпись), Defect (кол-во `ControlUnit.defect=true` по лоту), SN Defect (ссылки на отчёт 6, >10 — надпись), Start/Finish (без фильтра result), Total/Comment из `Lot`; сортировка по Start (старые сверху); сводка сверху, включая «Брак» |
+| 1 | Сводный по лотам | год (по умолчанию текущий), произвольный период | Лоты: Production (уник. OK на 010), Ok (уник. OK на 130), Difference, SN hasn’t finished production (Diff-SN, ссылки на отчёт 6, >10 — надпись), Defect (кол-во `ControlUnit.defect=true` по лоту), SN Defect (ссылки на отчёт 6, >10 — надпись), Start/Finish (без фильтра result), Total/Comment из `Lot`; сортировка по Start (старые сверху); сводка сверху, включая «Брак»; строки без лота (после удаления лота) показываются как «—» без ссылок на редактирование |
 | 2 | Производительность линии | месяц, год, период, лот | По дням: FOL (010→050) и BOL (060→130) — часы, выпуск, скорость; только дни с непустыми данными; 3 диаграммы; сводка FOL/BOL; `Cache-Control: no-store` |
 | 3 | Сводный по месяцам | год | Агрегация данных отчёта 2 по 12 месяцам года (все месяцы, включая пустые); те же блоки FOL/BOL, диаграммы; `Cache-Control: no-store` у HTML и Excel-экспорта |
 | 4 | Брак | 30d/месяц/90d/180d/год/период/лот, тип брака | Ручной брак + БУ, не завершившие производство; последняя OK-станция и дата; сводка по этапам; комментарий SN (редактирование — staff); фото: просмотр — всем, кнопка «+» (загрузка) и корзина (удаление) — только staff, у всех строк таблицы |
@@ -363,7 +363,7 @@ uv run --extra dev python -m pytest tests/test_reports.py -q
 uv run --extra dev python -m pytest -q
 ```
 
-В `tests/` 137 тестов (включая 4 доменных теста в `test_domain.py` и 11 тестов
+В `tests/` 138 тестов (включая 4 доменных теста в `test_domain.py` и 11 тестов
 бэкапа в `test_backup.py`). БД-тесты требуют запущенного PostgreSQL
 (`start`/`stop` в корне переводят службу `postgresql-x64-17`).
 
@@ -375,6 +375,8 @@ uv run --extra dev python -m pytest -q
 |---|---|
 | Новый/изменённый отчёт | `reports/queries.py` (данные), `reports/views.py` (фильтры, экспорт), `templates/reports/reportN.html`, `reports/urls.py`, `templates/base.html`/`home.html` (ссылки) |
 | Фильтр периода | `_reportN_period`/`_reportN_data` в `views.py`; частая причина 500 — необработанный разбор дат |
+| Отчёт №1 падает после удаления лота | `templates/reports/report1.html`: ссылки `lot_edit` только при непустом `row.LOT` (иначе `NoReverseMatch`), пустой лот — «—» |
+| Excel отчёта №8 повреждён (`drawing`) | `Report8ExportView`: `series.graphicalProperties.line.width` — только целое число EMU (1 pt = 12700), иначе Excel удаляет `/xl/drawings/drawing1.xml` |
 | Экспорт Excel | `ReportNExportView` в `views.py`; для №2/№3 — листы сводки и диаграмм; для №1 — лист «Сводка»; имя файла с датой/временем |
 | Импорт/колонки | `uploads/excel_parser.py`, `uploads/forms.py`, `uploads/views.py` |
 | Модели/админка/миграции | `production/models.py`, `production/admin.py`, `production/stations.py`, `production/testdata.py`, `production/migrations/`, `mes_report3/admin_site.py` |

@@ -118,6 +118,20 @@ def test_report1_orders_defect_count_and_sns():
 
 
 @pytest.mark.django_db
+def test_report1_page_renders_row_without_lot():
+    """Строка без лота (ControlUnit.lot=None) не ломает страницу."""
+    dt = timezone.make_aware(datetime(2026, 8, 13, 10, 0))
+    ProductionRecord.objects.create(
+        lot_number="", subop_no=10, pcs_no="SN-NO-LOT",
+        created_date=dt, result="OK", production_spec="SPEC",
+    )
+    with override_settings(ALLOWED_HOSTS=["localhost", "127.0.0.1", "testserver"]):
+        response = Client().get("/reports/1/")
+    assert response.status_code == 200
+    assert "—" in response.content.decode()
+
+
+@pytest.mark.django_db
 def test_report1_no_data():
     """Отчет 1 с пустой БД."""
     data = report1_orders()
@@ -2330,6 +2344,17 @@ def test_report8_export_includes_daily_chart(monkeypatch):
     solid_fills = [s.graphicalProperties.line.solidFill for s in line_chart.series]
     assert all(solid_fills)
     assert len(set(solid_fills)) == 7
+
+    # Ширина линии в chart1.xml должна быть целым числом EMU, иначе Excel
+    # считает drawing повреждённым и удаляет его при открытии.
+    import re
+    import zipfile
+
+    with zipfile.ZipFile(BytesIO(response.content)) as archive:
+        chart_xml = archive.read("xl/charts/chart1.xml").decode("utf-8")
+    widths = re.findall(r'<a:ln w="([^"]+)"', chart_xml)
+    assert widths
+    assert all(re.fullmatch(r"\d+", width) for width in widths), widths
 
 
 @pytest.mark.django_db

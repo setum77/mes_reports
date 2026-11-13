@@ -97,10 +97,16 @@
             {% for row in data %}
             <tr>
                 <td>{{ row.N }}</td>
-                <td><a href="{% url 'reports:lot_edit' row.LOT %}" class="text-decoration-none" title="Редактировать лот">{{ row.LOT }}</a></td>
+                <td>
+                    {% if row.LOT %}
+                    <a href="{% url 'reports:lot_edit' row.LOT %}" class="text-decoration-none" title="Редактировать лот">{{ row.LOT }}</a>
+                    {% else %}
+                    <span class="text-muted">—</span>
+                    {% endif %}
+                </td>
                 <td>{{ row.production_spec }}</td>
                 <td>
-                    {% if user.is_staff %}
+                    {% if user.is_staff and row.LOT %}
                     <a href="{% url 'reports:lot_edit' row.LOT %}" class="text-decoration-none" title="Редактировать">{{ row.Total|default:'' }}</a>
                     {% else %}
                     {{ row.Total|default:'' }}
@@ -132,7 +138,7 @@
                 <td class="small text-nowrap">{% if row.finish %}{{ row.finish|date:"Y-m-d H:i" }}{% endif %}</td>
                 <td class="small">
                     {{ row.comment }}
-                    {% if user.is_staff %}
+                    {% if user.is_staff and row.LOT %}
                     <a href="{% url 'reports:lot_edit' row.LOT %}" class="text-decoration-none ms-1" title="Редактировать комментарий"><i class="bi bi-pencil"></i></a>
                     {% endif %}
                 </td>

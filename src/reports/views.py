@@ -1980,7 +1980,8 @@ class Report8ExportView(_ExcelExportBase):
             for series, ds in zip(line_chart.series, chart_datasets):
                 color_hex = ds["color"].lstrip("#").upper()
                 series.graphicalProperties.line.solidFill = color_hex
-                series.graphicalProperties.line.width = 2.25
+                # Ширина линии задаётся в EMU (1 pt = 12700 EMU), только целое число.
+                series.graphicalProperties.line.width = 28575
                 series.marker = Marker(symbol="circle", size=5)
             summary_ws.add_chart(line_chart, "J12")
 

@@ -119,7 +119,7 @@
                 <td class="small">
                     {{ row.comment|default:'' }}
                     {% if user.is_staff %}
-                    <a href="{% url 'reports:sn_comment_edit' row.pcs_no %}" class="text-decoration-none ms-2" title="Редактировать комментарий">Редактировать</a>
+                    <a href="{% url 'reports:sn_comment_edit' row.pcs_no %}" class="text-decoration-none ms-2" title="Редактировать комментарий"><i class="bi bi-pencil"></i></a>
                     {% endif %}
                 </td>
             </tr>
@@ -167,7 +167,7 @@
                 <td class="small">
                     {{ row.comment|default:'' }}
                     {% if user.is_staff %}
-                    <a href="{% url 'reports:sn_comment_edit' row.pcs_no %}" class="text-decoration-none ms-2" title="Редактировать комментарий">Редактировать</a>
+                    <a href="{% url 'reports:sn_comment_edit' row.pcs_no %}" class="text-decoration-none ms-2" title="Редактировать комментарий"><i class="bi bi-pencil"></i></a>
                     {% endif %}
                 </td>
             </tr>
